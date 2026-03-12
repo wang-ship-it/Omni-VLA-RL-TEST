@@ -25,7 +25,7 @@ def get_model(cfg: DictConfig, torch_dtype=None):
     import openpi.shared.download as download
     import openpi.transforms as transforms
     import safetensors
-    from openpi.training import checkpoints as _checkpoints
+    import openpi.shared.normalize as _normalize
 
     from rlinf.models.embodiment.omni_vla.dataconfig import get_omni_vla_config
     from rlinf.models.embodiment.omni_vla.omni_vla_action_model import (
@@ -86,7 +86,8 @@ def get_model(cfg: DictConfig, torch_dtype=None):
         if data_config.asset_id is None:
             logger.warning("data_config.asset_id is None, skipping norm_stats loading.")
         try:
-            norm_stats = _checkpoints.load_norm_stats(checkpoint_dir, data_config.asset_id)
+            norm_stats_dir = os.path.join(checkpoint_dir, data_config.asset_id)
+            norm_stats = _normalize.load(norm_stats_dir)
         except Exception as e:
             logger.warning(
                 f"Failed to load norm_stats from checkpoint_dir={checkpoint_dir}, "
