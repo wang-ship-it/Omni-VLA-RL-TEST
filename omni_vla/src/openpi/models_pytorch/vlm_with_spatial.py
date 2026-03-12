@@ -176,7 +176,7 @@ class VLMWithSpatialActionExpertModel(
         # Full search of all keys to see if they contain VLM
         vlm_keys = [k for k in state_dict.keys() if "paligemma_with_expert.paligemma" in k]
 
-        print(f"Found {len(vlm_keys)} keys for reasoning_expert:")
+        # print(f"Found {len(vlm_keys)} keys for reasoning_expert:")
         for k in vlm_keys:
             print(k)
 
@@ -223,9 +223,9 @@ class VLMWithSpatialActionExpertModel(
             strict=False
         )
 
-        print(f"Loaded reasoning_expert: {len(paligemma_state)} params")
-        print("Missing keys:", missing_keys[:20])
-        print("Unexpected keys:", unexpected_keys[:20])
+        # print(f"Loaded reasoning_expert: {len(paligemma_state)} params")
+        # print("Missing keys:", missing_keys[:20])
+        # print("Unexpected keys:", unexpected_keys[:20])
 
 
         "Spatial expert config"
@@ -256,8 +256,8 @@ class VLMWithSpatialActionExpertModel(
             strict=False
         )
 
-        print("VGGT missing:", missing)
-        print("VGGT unexpected:", unexpected)
+        # print("VGGT missing:", missing)
+        # print("VGGT unexpected:", unexpected)
         # self.spatial_projector = nn.Linear(768, spatial_expert_config_hf.width)
         self.spatial_expert = GemmaForCausalLM(config=spatial_expert_config_hf)
 
