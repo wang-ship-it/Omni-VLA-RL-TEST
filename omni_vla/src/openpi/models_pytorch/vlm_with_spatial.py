@@ -61,7 +61,7 @@ def compute_layer_complete(
     value_states = torch.cat(value_states, dim=2)
     
     # reasoning_expert.language_model is GemmaForCausalLM, requires .model.rotary_emb
-    cos, sin = reasoning_expert.language_model.model.rotary_emb(query_states, position_ids)
+    cos, sin = reasoning_expert.language_model.rotary_emb(query_states, position_ids)
 
     # seq_len = query_states.shape[2]
 
@@ -81,7 +81,7 @@ def compute_layer_complete(
     # )
 
 
-    # cos, sin = reasoning_expert.language_model.model.rotary_emb(dummy_tensor, position_ids)
+    # cos, sin = reasoning_expert.language_model.rotary_emb(dummy_tensor, position_ids)
     # cos, sin = reasoning_expert.get_rotary_embedding(seq_len)
 
     # ⚠ Ensure length aligns with Q/K
@@ -93,10 +93,10 @@ def compute_layer_complete(
     )
     batch_size = query_states.shape[0]
     # reasoning_expert.language_model is GemmaForCausalLM, requires .model.layers
-    scaling = reasoning_expert.language_model.model.layers[layer_idx].self_attn.scaling
+    scaling = reasoning_expert.language_model.layers[layer_idx].self_attn.scaling
     # Attention computation
     att_output, _ = modeling_gemma.eager_attention_forward(
-        reasoning_expert.language_model.model.layers[layer_idx].self_attn,
+        reasoning_expert.language_model.layers[layer_idx].self_attn,
         query_states,
         key_states,
         value_states,
@@ -104,8 +104,8 @@ def compute_layer_complete(
         scaling,
     )
     # Get head_dim from the current layer, not from the model
-    head_dim = reasoning_expert.language_model.model.layers[layer_idx].self_attn.head_dim
-    num_attention_heads = reasoning_expert.language_model.model.layers[layer_idx].self_attn.config.num_attention_heads
+    head_dim = reasoning_expert.language_model.layers[layer_idx].self_attn.head_dim
+    num_attention_heads = reasoning_expert.language_model.layers[layer_idx].self_attn.config.num_attention_heads
     att_output = att_output.reshape(batch_size, -1, 1 * num_attention_heads * head_dim)
     # Process layer outputs
     outputs_embeds = []
@@ -173,13 +173,6 @@ class VLMWithSpatialActionExpertModel(
         # 2. Load local weights
         state_dict = load_file(vlm_pretrained_path, device = "cpu")
 
-        # Full search of all keys to see if they contain VLM
-        vlm_keys = [k for k in state_dict.keys() if "paligemma_with_expert.paligemma" in k]
-
-        # print(f"Found {len(vlm_keys)} keys for reasoning_expert:")
-        for k in vlm_keys:
-            print(k)
-
         paligemma_state_raw = {
             k.replace("paligemma_with_expert.paligemma.", "", 1): v
             for k, v in state_dict.items()
@@ -199,8 +192,9 @@ class VLMWithSpatialActionExpertModel(
         #   checkpoint:  lm_head.weight                     →  HF:  language_model.lm_head.weight
         def _remap_paligemma_key(key: str) -> str:
             if key.startswith("model.language_model."):
-                # model.language_model.layers.X.xxx -> language_model.model.layers.X.xxx
-                return "language_model.model." + key[len("model.language_model."):]
+                # model.language_model.layers.X.xxx -> language_model.layers.X.xxx
+                # (AutoModel returns GemmaModel directly, no extra .model level)
+                return "language_model." + key[len("model.language_model."):]
             elif key.startswith("model.vision_tower."):
                 # model.vision_tower.xxx -> vision_tower.xxx
                 return key[len("model."):]

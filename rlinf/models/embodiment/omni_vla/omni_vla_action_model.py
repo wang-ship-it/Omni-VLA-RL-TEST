@@ -601,7 +601,7 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
             state, x_t, expanded_time
         )
         if (
-            self.reasoning_spatial_expert.reasoning_expert.language_model.model.layers[
+            self.reasoning_spatial_expert.reasoning_expert.language_model.layers[
                 0
             ].self_attn.q_proj.weight.dtype
             == torch.bfloat16

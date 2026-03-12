@@ -743,11 +743,11 @@ def train_loop(config: _config.TrainConfig):
 
     model.train()
 
-    print("Trainable parameters:")
+    # print("Trainable parameters:")
 
-    for n, p in model.named_parameters():
-        if p.requires_grad:
-            print(n)
+    # for n, p in model.named_parameters():
+    #     if p.requires_grad:
+    #         print(n)
 
     start_time = time.time()
     infos = []  # Collect stats over log interval
