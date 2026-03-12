@@ -171,7 +171,7 @@ class VLMWithSpatialActionExpertModel(
         self.reasoning_expert = PaliGemmaForConditionalGeneration(config=vlm_config_hf)
 
         # 2. Load local weights
-        state_dict = load_file(MODEL_PATH, device = "cpu")
+        state_dict = load_file(vlm_pretrained_path, device = "cpu")
 
         # Full search of all keys to see if they contain VLM
         vlm_keys = [k for k in state_dict.keys() if "paligemma_with_expert.paligemma" in k]
