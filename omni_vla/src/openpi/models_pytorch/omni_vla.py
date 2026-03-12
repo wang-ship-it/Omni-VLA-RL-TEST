@@ -155,6 +155,8 @@ class OmniVLA(nn.Module):
             paligemma_config,
             spatial_config,
             action_expert_config,
+            vlm_pretrained_path=config.vlm_pretrained_path,
+            vggt_pretrained_path=config.vggt_pretrained_path,
             precision=config.dtype,
         )
 

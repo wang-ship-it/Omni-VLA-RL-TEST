@@ -250,7 +250,7 @@ class VLMWithSpatialActionExpertModel(
                                     enable_track=False,
                                     feature_only=True,
                                 )
-        state_dict_vggt = load_file(VGGT_PRETRAINED_PATH, device="cpu")
+        state_dict_vggt = load_file(vggt_pretrained_path, device="cpu")
         missing, unexpected = self.vggt_encoder.load_state_dict(
             state_dict_vggt,
             strict=False
