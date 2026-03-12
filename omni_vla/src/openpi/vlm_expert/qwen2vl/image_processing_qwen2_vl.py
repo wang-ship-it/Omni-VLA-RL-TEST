@@ -36,17 +36,28 @@ from transformers.image_utils import (
     ChannelDimension,
     ImageInput,
     PILImageResampling,
-    VideoInput,
     get_image_size,
     infer_channel_dimension_format,
     is_scaled_image,
-    make_batched_videos,
     make_flat_list_of_images,
     make_list_of_images,
     to_numpy_array,
     valid_images,
     validate_preprocess_arguments,
 )
+
+# VideoInput was removed in newer transformers versions; define as type alias
+VideoInput = list
+
+
+def make_batched_videos(videos):
+    """Compat shim: ensure videos is a list of video (each video is a list of frames)."""
+    if videos is None:
+        return videos
+    # If first element is a list/tuple of frames, already batched
+    if isinstance(videos, (list, tuple)) and len(videos) > 0 and isinstance(videos[0], (list, tuple)):
+        return list(videos)
+    return [videos]
 from transformers.utils import TensorType, logging
 
 
