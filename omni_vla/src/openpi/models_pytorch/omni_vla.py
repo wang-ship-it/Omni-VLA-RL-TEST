@@ -279,10 +279,13 @@ class OmniVLA(nn.Module):
             )
         return func(*args, **kwargs)
 
-    def _prepare_attention_masks_4d(self, att_2d_masks):
+    def _prepare_attention_masks_4d(self, att_2d_masks, dtype=None):
         """Helper method to prepare 4D attention masks for transformer."""
         att_2d_masks_4d = att_2d_masks[:, None, :, :]
-        return torch.where(att_2d_masks_4d, 0.0, -2.3819763e38)
+        mask = torch.where(att_2d_masks_4d, 0.0, -2.3819763e38)
+        if dtype is not None:
+            mask = mask.to(dtype=dtype)
+        return mask
 
     def sample_noise(self, shape, device):
         return torch.normal(

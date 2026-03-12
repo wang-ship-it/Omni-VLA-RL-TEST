@@ -325,9 +325,11 @@ class VLMWithSpatialActionExpertModel(
             suffix_output = None
             
         elif inputs_embeds[0] is None and inputs_embeds[2] is None:
+            spatial_dtype = next(self.spatial_expert.parameters()).dtype
+            spatial_attention_mask = attention_mask.to(dtype=spatial_dtype) if attention_mask is not None else None
             middle_output = self.spatial_expert.forward(
                 inputs_embeds=inputs_embeds[1],
-                attention_mask=attention_mask,
+                attention_mask=spatial_attention_mask,
                 position_ids=position_ids,
                 past_key_values=past_key_values,
                 use_cache=use_cache,
@@ -339,9 +341,11 @@ class VLMWithSpatialActionExpertModel(
             suffix_output = None
             
         elif inputs_embeds[0] is None and inputs_embeds[1] is None:
+            action_dtype = next(self.action_expert.parameters()).dtype
+            action_attention_mask = attention_mask.to(dtype=action_dtype) if attention_mask is not None else None
             suffix_output = self.action_expert.forward(
                 inputs_embeds=inputs_embeds[2],
-                attention_mask=attention_mask,
+                attention_mask=action_attention_mask,
                 position_ids=position_ids,
                 past_key_values=past_key_values,
                 use_cache=use_cache,
