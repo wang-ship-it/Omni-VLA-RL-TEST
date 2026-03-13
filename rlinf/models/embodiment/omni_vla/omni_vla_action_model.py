@@ -364,9 +364,24 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
         outputs = self.sample_actions(
             observation, mode=mode, compute_values=compute_values
         )
+        raw_actions = outputs["actions"]
+        if self.global_step < 3:
+            self.logger.info(
+                f"[OmniVLA DEBUG] raw_actions stats: "
+                f"mean={raw_actions.mean().item():.4f}, std={raw_actions.std().item():.4f}, "
+                f"min={raw_actions.min().item():.4f}, max={raw_actions.max().item():.4f}, "
+                f"shape={tuple(raw_actions.shape)}"
+            )
         actions = self.output_transform(
-            {"actions": outputs["actions"], "state": observation.state}
+            {"actions": raw_actions, "state": observation.state}
         )["actions"].numpy()
+        if self.global_step < 3:
+            self.logger.info(
+                f"[OmniVLA DEBUG] final_actions stats: "
+                f"mean={actions.mean():.4f}, std={actions.std():.4f}, "
+                f"min={actions.min():.4f}, max={actions.max():.4f}, "
+                f"shape={actions.shape}"
+            )
         prev_logprobs = outputs["prev_logprobs"]
         prev_values = outputs["prev_values"]
         forward_action = None

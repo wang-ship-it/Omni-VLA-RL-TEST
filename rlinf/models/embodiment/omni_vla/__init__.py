@@ -67,10 +67,21 @@ def get_model(cfg: DictConfig, torch_dtype=None):
     # Freeze parameters according to config
     model.set_requires_grad()
 
-    # Load weights
+    # Load weights and verify
+    model_keys = set(model.state_dict().keys())
+    loaded_keys = set()
     for weight_path in weight_paths:
-        # strict=False because we might have extra heads or partial weights
+        import safetensors as _sf
+        ckpt_keys = set(_sf.safe_open(weight_path, framework="pt").keys())
+        loaded_keys.update(ckpt_keys)
         safetensors.torch.load_model(model, weight_path, strict=False)
+
+    missing_in_ckpt = model_keys - loaded_keys
+    unexpected_in_ckpt = loaded_keys - model_keys
+    if missing_in_ckpt:
+        logger.warning(f"[OmniVLA] {len(missing_in_ckpt)} model keys NOT in checkpoint: {list(missing_in_ckpt)[:10]}...")
+    if unexpected_in_ckpt:
+        logger.warning(f"[OmniVLA] {len(unexpected_in_ckpt)} checkpoint keys NOT in model: {list(unexpected_in_ckpt)[:10]}...")
     
     # Ensure correct dtype for specific parts if needed, usually handled by load_model or init
     # OmniVLA handles dtype in init mostly.
