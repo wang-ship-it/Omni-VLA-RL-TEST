@@ -82,9 +82,10 @@ def get_model(cfg: DictConfig, torch_dtype=None):
             # checkpoint: language_model.model.X -> model: model.language_model.X
             if suffix.startswith("language_model.model."):
                 return prefix + "model.language_model." + suffix[len("language_model.model."):]
-            # checkpoint: language_model.lm_head.X -> model: model.language_model.lm_head.X
+            # checkpoint: language_model.lm_head.X -> model: lm_head.X
+            # (PaliGemmaForConditionalGeneration has lm_head at top level, not under .model)
             if suffix.startswith("language_model.lm_head."):
-                return prefix + "model." + suffix
+                return prefix + suffix[len("language_model."):]
             # checkpoint: vision_tower.X -> model: model.vision_tower.X
             if suffix.startswith("vision_tower."):
                 return prefix + "model." + suffix
@@ -103,6 +104,12 @@ def get_model(cfg: DictConfig, torch_dtype=None):
         for ckpt_key in ckpt_keys:
             model_key = _remap_ckpt_key(ckpt_key)
             remapped_state_dict[model_key] = f.get_tensor(ckpt_key)
+
+        # Handle weight-tied embed_tokens: PaliGemma ties embed_tokens with lm_head
+        lm_head_key = "reasoning_spatial_expert.reasoning_expert.lm_head.weight"
+        embed_tokens_key = "reasoning_spatial_expert.reasoning_expert.model.language_model.embed_tokens.weight"
+        if lm_head_key in remapped_state_dict and embed_tokens_key not in remapped_state_dict:
+            remapped_state_dict[embed_tokens_key] = remapped_state_dict[lm_head_key]
 
         missing, unexpected = model.load_state_dict(remapped_state_dict, strict=False)
         if missing:
