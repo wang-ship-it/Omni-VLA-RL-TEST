@@ -748,6 +748,8 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
         prefix_att_2d_masks_4d = self._prepare_attention_masks_4d(prefix_att_2d_masks)
 
         self.reasoning_spatial_expert.reasoning_expert.language_model.config._attn_implementation = "eager"
+        self.reasoning_spatial_expert.spatial_expert.config._attn_implementation = "eager"
+        self.reasoning_spatial_expert.action_expert.config._attn_implementation = "eager"
 
         normalizer = torch.tensor(prefix_embs.shape[-1]**0.5, dtype=prefix_embs.dtype, device=prefix_embs.device)
         prefix_embs_unscaled = prefix_embs / normalizer
