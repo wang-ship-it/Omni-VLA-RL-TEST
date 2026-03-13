@@ -366,7 +366,7 @@ class OmniVLA(nn.Module):
         vggt_dtype = next(self.reasoning_spatial_expert.vggt_encoder.parameters()).dtype
         images_flat = images_tensor.reshape(B * S, C, H, W)
         images_flat = F.interpolate(images_flat, size=(252, 252), mode="bilinear", align_corners=False)
-        images_flat = images_flat * 2 - 1  # [0,1] -> [-1,1]
+        # images are already in [-1, 1] from Observation.from_dict, no need to rescale
         images_tensor = images_flat.reshape(B, S, C, 252, 252).to(dtype=vggt_dtype)
 
         # 3. VGGT feature extraction
