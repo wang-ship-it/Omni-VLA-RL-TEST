@@ -67,21 +67,48 @@ def get_model(cfg: DictConfig, torch_dtype=None):
     # Freeze parameters according to config
     model.set_requires_grad()
 
-    # Load weights and verify
+    # Load weights with key remapping
+    # The SFT checkpoint uses a different key hierarchy for reasoning_expert:
+    #   checkpoint: reasoning_expert.language_model.model.layers.X...
+    #   model:      reasoning_expert.model.language_model.layers.X...
+    # Similarly for vision_tower and other sub-modules.
     model_keys = set(model.state_dict().keys())
-    loaded_keys = set()
+
+    def _remap_ckpt_key(key: str) -> str:
+        """Remap checkpoint keys to match model's state_dict hierarchy."""
+        prefix = "reasoning_spatial_expert.reasoning_expert."
+        if key.startswith(prefix):
+            suffix = key[len(prefix):]
+            # checkpoint: language_model.model.X -> model: model.language_model.X
+            if suffix.startswith("language_model.model."):
+                return prefix + "model.language_model." + suffix[len("language_model.model."):]
+            # checkpoint: language_model.lm_head.X -> model: model.language_model.lm_head.X
+            if suffix.startswith("language_model.lm_head."):
+                return prefix + "model." + suffix
+            # checkpoint: vision_tower.X -> model: model.vision_tower.X
+            if suffix.startswith("vision_tower."):
+                return prefix + "model." + suffix
+            # checkpoint: multi_modal_projector.X -> model: model.multi_modal_projector.X
+            if suffix.startswith("multi_modal_projector."):
+                return prefix + "model." + suffix
+        return key
+
     for weight_path in weight_paths:
         import safetensors as _sf
-        ckpt_keys = set(_sf.safe_open(weight_path, framework="pt").keys())
-        loaded_keys.update(ckpt_keys)
-        safetensors.torch.load_model(model, weight_path, strict=False)
+        f = _sf.safe_open(weight_path, framework="pt")
+        ckpt_keys = list(f.keys())
 
-    missing_in_ckpt = model_keys - loaded_keys
-    unexpected_in_ckpt = loaded_keys - model_keys
-    if missing_in_ckpt:
-        logger.warning(f"[OmniVLA] {len(missing_in_ckpt)} model keys NOT in checkpoint: {list(missing_in_ckpt)[:10]}...")
-    if unexpected_in_ckpt:
-        logger.warning(f"[OmniVLA] {len(unexpected_in_ckpt)} checkpoint keys NOT in model: {list(unexpected_in_ckpt)[:10]}...")
+        # Build remapped state dict
+        remapped_state_dict = {}
+        for ckpt_key in ckpt_keys:
+            model_key = _remap_ckpt_key(ckpt_key)
+            remapped_state_dict[model_key] = f.get_tensor(ckpt_key)
+
+        missing, unexpected = model.load_state_dict(remapped_state_dict, strict=False)
+        if missing:
+            logger.warning(f"[OmniVLA] {len(missing)} keys missing after remapped load: {missing[:10]}...")
+        if unexpected:
+            logger.warning(f"[OmniVLA] {len(unexpected)} unexpected keys after remapped load: {unexpected[:10]}...")
     
     # Ensure correct dtype for specific parts if needed, usually handled by load_model or init
     # OmniVLA handles dtype in init mostly.
