@@ -184,3 +184,72 @@ RLinf
 ```
 
 依赖关系：`Omni_VLA/` (editable install) → 提供 `openpi.*` namespace → `rlinf` 通过 `from openpi.models_pytorch.omni_vla import OmniVLA` 等使用
+
+---
+
+### [2026-03-14] 服务器安装排障记录（omni_vla + maniskill_libero）
+
+**环境**: 阿里云 ECS (Ubuntu 24.04, CUDA 12.4, Python 3.11, PyTorch 2.6.0+cu124)
+
+#### 问题 1: `ghfast.top` GitHub 镜像不稳定
+- **现象**: `bash requirements/install.sh embodied --model omni_vla --env maniskill_libero --use-mirror` 在 ManiSkill git fetch 阶段卡住/超时
+  ```
+  Updating https://ghfast.top/https://github.com/haosulab/ManiSkill.git (v3.0.0b22)
+  error: RPC failed; curl 56 Recv failure: Connection reset by peer
+  ```
+- **原因**: `--use-mirror` 设置了 `git config --global url."https://ghfast.top/github.com/".insteadOf "https://github.com/"`，所有 GitHub URL 被重写到不稳定的镜像
+- **解决**:
+  1. 清除全局 git URL 重写: `git config --global --unset-all url.https://ghfast.top/github.com/.insteadOf`
+  2. 本地下载 ManiSkill tarball (`https://github.com/haosulab/ManiSkill/archive/refs/tags/v3.0.0b22.tar.gz`)，上传到服务器后安装:
+     ```bash
+     UV_DEFAULT_INDEX=https://mirrors.aliyun.com/pypi/simple uv pip install ./ManiSkill-3.0.0b22
+     ```
+  3. 后续不带 `--use-mirror` 运行，PyPI 镜像用环境变量单独指定
+
+#### 问题 2: ManiSkill 安装到错误环境
+- **现象**: `uv pip show mani-skill` 在 `.venv` 中找不到包
+- **原因**: 手动安装时未激活 `.venv` 虚拟环境，包装到了 base 环境
+- **解决**: 先 `source .venv/bin/activate` 确认 `which python` 指向 `.venv/bin/python`，再安装
+
+#### 问题 3: PhysX 预编译库下载慢 (8KB/s)
+- **现象**: `download_assets.sh` 中 wget 下载 `sapien-sim/physx-precompiled` releases 极慢
+- **解决**: 本地浏览器下载 `linux-so.zip`，scp 上传到 `~/.sapien/physx/105.1-physx-5.3.1.patch0/`，解压
+
+#### 问题 4: flash-attn 安装
+- **解决**: 本地下载预编译 wheel 后上传安装:
+  ```bash
+  uv pip install ./flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp311-cp311-linux_x86_64.whl
+  ```
+
+#### 问题 5: openpi 缺少大量依赖
+- **现象**: 运行 `run_embodiment.sh` 时连续报 `ModuleNotFoundError`
+- **缺失模块及安装顺序**:
+  1. `tqdm_loggable` → `uv pip install tqdm-loggable`
+  2. `flax` → `uv pip install flax jax jaxlib`
+  3. `openpi_client` → `uv pip install -e ./omni_vla/packages/openpi-client`
+  4. `beartype` → `uv pip install beartype`
+  5. `orbax-checkpoint` 与 `jax` 版本不兼容 (`DeviceLocalLayout` 缺失) → 降级 `uv pip install "orbax-checkpoint==0.6.4"`
+  6. `lerobot` → `uv pip install lerobot`（从 GitHub 安装慢，可本地 clone 上传）
+- **根因**: `uv pip install -e ./` 只安装了 `rlinf` 包的直接依赖，`openpi` 作为子目录通过 namespace package 引入，其依赖未被自动安装
+- **建议**: 将 openpi 的关键依赖加入 `pyproject.toml` 的 `[project.optional-dependencies]` 中，或在安装脚本中补全
+
+#### 问题 6: `libgl1-mesa-glx` 包不可用
+- **现象**: `apt install libgl1-mesa-glx` 报 `Package has no installation candidate`
+- **原因**: Ubuntu 24.04 中该包已被替换
+- **影响**: 不影响运行，`libglx-mesa0` 已安装
+
+#### 问题 7: git push 被 Codeup 拒绝
+- **现象**: `remote rejected: Author 邮箱与提交用户不一致`
+- **解决**: `git config user.email "2252846422@qq.com"` 后 `git commit --amend --reset-author --no-edit`
+
+#### 当前安装状态
+- ✅ libero 0.1.0（本地 editable）
+- ✅ mani-skill 3.0.0b22（本地 tarball）
+- ✅ flash-attn 2.7.4.post1（本地 wheel）
+- ✅ PhysX 预编译库
+- ✅ ManiSkill assets
+- ✅ OpenPI tokenizer
+- ✅ rlinf 0.2.0.dev2（editable）
+- ✅ openpi_client（editable）
+- ✅ flax, jax, beartype, tqdm-loggable 等补充依赖
+- ⏳ lerobot（安装中）

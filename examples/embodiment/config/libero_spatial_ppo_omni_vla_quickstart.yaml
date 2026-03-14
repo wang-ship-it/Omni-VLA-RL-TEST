@@ -126,7 +126,7 @@ actor:
     gradient_checkpointing: False
     omni_vla:
       config_name: omni_vla_libero
-      detach_critic_input: False
+      detach_critic_input: True
 
   optim:
     lr: 5.0e-6
