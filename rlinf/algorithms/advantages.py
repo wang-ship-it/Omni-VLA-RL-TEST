@@ -220,6 +220,35 @@ def compute_grpo_dynamic_advantages(
     return advantages, None
 
 
+@register_advantage("gspo")
+def compute_gspo_advantages_and_returns(
+    rewards: torch.Tensor,
+    gamma: float = 1.0,
+    gae_lambda: float = 1.0,
+    values: Optional[torch.Tensor] = None,
+    normalize_advantages: bool = True,
+    normalize_returns: bool = False,
+    loss_mask: Optional[torch.Tensor] = None,
+    dones: Optional[torch.Tensor] = None,
+    **kwargs,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Compute advantages for GSPO (Group-level Sequence Policy Optimization).
+    Uses GAE for advantage estimation, paired with sequence-level GSPO loss.
+    """
+    return compute_gae_advantages_and_returns(
+        rewards=rewards,
+        gamma=gamma,
+        gae_lambda=gae_lambda,
+        values=values,
+        normalize_advantages=normalize_advantages,
+        normalize_returns=normalize_returns,
+        loss_mask=loss_mask,
+        dones=dones,
+        **kwargs,
+    )
+
+
 @register_advantage("reinpp")
 def compute_reinpp_advantages(
     rewards: torch.Tensor,
