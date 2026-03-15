@@ -99,12 +99,20 @@ def compute_rollout_metrics(data_buffer: dict) -> dict:
         }
         rollout_metrics.update(rewards_metrics)
 
+    loss_mask = data_buffer.get("loss_mask", None)
+
     if "advantages" in data_buffer:
         advantages = data_buffer["advantages"]
-        mean_adv = torch.mean(advantages).to(torch.cuda.current_device())
+        if loss_mask is not None:
+            valid_adv = advantages[loss_mask]
+            mean_adv = valid_adv.mean().to(torch.cuda.current_device())
+            max_adv = valid_adv.max().detach().item()
+            min_adv = valid_adv.min().detach().item()
+        else:
+            mean_adv = torch.mean(advantages).to(torch.cuda.current_device())
+            max_adv = torch.max(advantages).detach().item()
+            min_adv = torch.min(advantages).detach().item()
         torch.distributed.all_reduce(mean_adv, op=torch.distributed.ReduceOp.AVG)
-        max_adv = torch.max(advantages).detach().item()
-        min_adv = torch.min(advantages).detach().item()
         reduce_adv_tensor = torch.as_tensor(
             [-min_adv, max_adv], device=torch.cuda.current_device(), dtype=torch.float32
         )
@@ -122,10 +130,16 @@ def compute_rollout_metrics(data_buffer: dict) -> dict:
 
     if data_buffer.get("returns", None) is not None:
         returns = data_buffer["returns"]
-        mean_ret = torch.mean(returns).to(torch.cuda.current_device())
+        if loss_mask is not None:
+            valid_ret = returns[loss_mask]
+            mean_ret = valid_ret.mean().to(torch.cuda.current_device())
+            max_ret = valid_ret.max().detach().item()
+            min_ret = valid_ret.min().detach().item()
+        else:
+            mean_ret = torch.mean(returns).to(torch.cuda.current_device())
+            max_ret = torch.max(returns).detach().item()
+            min_ret = torch.min(returns).detach().item()
         torch.distributed.all_reduce(mean_ret, op=torch.distributed.ReduceOp.AVG)
-        max_ret = torch.max(returns).detach().item()
-        min_ret = torch.min(returns).detach().item()
         reduce_ret_tensor = torch.as_tensor(
             [-min_ret, max_ret], device=torch.cuda.current_device(), dtype=torch.float32
         )

@@ -304,7 +304,7 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
         entropy = entropy.mean(dim=[1, 2, 3], keepdim=False)[
             :, None
         ]  # [:,None] to align with loss-mask shape
-        value_t = value_t.mean(dim=-1, keepdim=False)
+        value_t = value_t.mean(dim=-1, keepdim=True)
         return {
             "logprobs": log_probs,
             "values": value_t,
