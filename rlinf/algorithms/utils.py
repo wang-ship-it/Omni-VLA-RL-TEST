@@ -204,6 +204,26 @@ def preprocess_reasoning_advantages_inputs(
             }
         )
 
+    elif kwargs["adv_type"] == "gspo":
+        # For GSPO, keep rewards as 1D but need to reshape loss_mask to match
+        # rewards: [num_groups * group_size], loss_mask: [seq_len, bsz]
+        # For grouped reasoning, we need loss_mask to have bsz = num_groups * group_size
+        # If bsz < num_groups * group_size, we need to reshape accordingly
+        num_groups = rewards.shape[0] // kwargs.get("group_size", 1)
+        expected_bsz = num_groups * kwargs.get("group_size", 1)
+
+        if loss_mask.shape[1] != expected_bsz:
+            # Reshape loss_mask to match grouped rewards structure
+            if loss_mask.shape[1] == 1:
+                # Broadcast single sequence to all groups
+                loss_mask = loss_mask.expand(seq_len, expected_bsz)
+            elif expected_bsz % loss_mask.shape[1] == 0:
+                # Repeat pattern if loss_mask is smaller
+                repeat_factor = expected_bsz // loss_mask.shape[1]
+                loss_mask = loss_mask.repeat(1, repeat_factor)
+
+        kwargs.update({"rewards": rewards, "loss_mask": loss_mask})
+
     elif kwargs["adv_type"] == "grpo_dynamic":
         grouped_rewards = (
             rewards.reshape(-1, kwargs["num_sequence"]).transpose(0, 1).contiguous()

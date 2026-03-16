@@ -232,13 +232,17 @@ def compute_gspo_advantages(
     Uses pairwise ranking: A_i = mean(r_i - r_j) for all j != i in the group.
 
     Args:
-        rewards (torch.Tensor): Reward or score values. Shape: [num_groups * group_size]
-        loss_mask (torch.Tensor): Loss mask for valid entries. Shape: [seq_len, num_groups * group_size]
+        rewards (torch.Tensor): Reward or score values. Shape: [num_groups * group_size] or [num_groups, group_size]
+        loss_mask (torch.Tensor): Loss mask for valid entries. Shape: [seq_len, num_sequences]
         group_size (int): Number of sequences per group.
 
     Returns:
         tuple[torch.Tensor, torch.Tensor]: (advantages, None)
     """
+    # Ensure rewards is 1D before reshaping
+    if rewards.ndim == 2:
+        rewards = rewards.reshape(-1)
+
     grouped_rewards = rewards.view(-1, group_size)  # [num_groups, group_size]
 
     group_sum = grouped_rewards.sum(dim=-1, keepdim=True)   # [num_groups, 1]
@@ -246,9 +250,13 @@ def compute_gspo_advantages(
     pairwise_baseline = (group_sum - grouped_rewards) / (group_size - 1)
 
     advantages = grouped_rewards - pairwise_baseline  # r_i - mean_{j!=i}(r_j)
+    advantages = advantages.view(-1)  # Flatten to [num_groups * group_size]
 
     # Broadcast sequence-level advantage to all tokens in each sequence
-    advantages = (torch.zeros_like(loss_mask) + advantages.view(1, -1)) * loss_mask
+    # loss_mask shape: [seq_len, num_sequences]
+    # advantages shape: [num_sequences]
+    seq_len = loss_mask.shape[0]
+    advantages = (torch.zeros(seq_len, advantages.shape[0], dtype=loss_mask.dtype, device=loss_mask.device) + advantages.unsqueeze(0)) * loss_mask
 
     return advantages, None
 
