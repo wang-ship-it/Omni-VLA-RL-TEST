@@ -226,7 +226,7 @@ def preprocess_reasoning_advantages_inputs(
                 loss_mask = loss_mask.repeat(1, repeat_factor)
 
         actual_bsz = expected_bsz
-        kwargs.update({"rewards": rewards})
+        kwargs.update({"rewards": rewards, "loss_mask": loss_mask})
 
     elif kwargs["adv_type"] == "grpo_dynamic":
         grouped_rewards = (
