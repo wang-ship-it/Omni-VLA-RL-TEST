@@ -187,6 +187,9 @@ def preprocess_reasoning_advantages_inputs(
     bsz, seq_len = loss_mask.shape
     loss_mask = loss_mask.transpose(0, 1)  # [seq_len, bsz]
 
+    # Track actual batch size (may be expanded for grouped algorithms)
+    actual_bsz = bsz
+
     assert rewards.ndim == 1, f"Unsupported reward shape {rewards.shape}"
 
     if kwargs["adv_type"] == "gae":
@@ -222,7 +225,8 @@ def preprocess_reasoning_advantages_inputs(
                 repeat_factor = expected_bsz // loss_mask.shape[1]
                 loss_mask = loss_mask.repeat(1, repeat_factor)
 
-        kwargs.update({"rewards": rewards, "loss_mask": loss_mask})
+        actual_bsz = expected_bsz
+        kwargs.update({"rewards": rewards})
 
     elif kwargs["adv_type"] == "grpo_dynamic":
         grouped_rewards = (
@@ -262,7 +266,8 @@ def preprocess_reasoning_advantages_inputs(
         kwargs.update({"ref_logprob": ref_logprob})
 
     # Create done flags (episode ends at the last token)
-    dones = torch.zeros(seq_len + 1, bsz, dtype=torch.bool, device=rewards.device)
+    # Use actual_bsz which may be expanded for grouped algorithms like gspo
+    dones = torch.zeros(seq_len + 1, actual_bsz, dtype=torch.bool, device=rewards.device)
     dones[-1] = True
     kwargs.update(
         {
