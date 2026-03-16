@@ -372,12 +372,14 @@ def compute_gspo_actor_loss_fn(
     # -------------------------------------------------
     # 4️⃣ KL penalty (稳定版)
     # -------------------------------------------------
-    # approx KL ≈ 0.5 * (log_ratio)^2
+    # approx KL ≈ 0.5 * (log_ratio)^2 (基于 sum，参考论文 Eq 18)
+    seq_log_ratio_sum = log_diff.sum(dim=reduce_dims, keepdim=True)
     approx_kl = 0.5 * loss_agg_func(
-        seq_log_ratio.pow(2),
+        seq_log_ratio_sum.pow(2),
         seq_mask,
     )
 
+    pure_policy_loss = policy_loss_mean.clone()
     policy_loss_mean = policy_loss_mean + kl_beta * approx_kl
 
     # -------------------------------------------------
@@ -395,7 +397,8 @@ def compute_gspo_actor_loss_fn(
         )
 
         metrics_data = {
-            "actor/policy_loss": policy_loss_mean.detach(),
+            "actor/policy_loss": pure_policy_loss,
+            "actor/total_loss": policy_loss_mean.detach(),
             "actor/ratio": loss_agg_func(ratio, seq_mask).detach(),
             "actor/clipped_ratio": loss_agg_func(clipped_ratio, seq_mask).detach(),
             "actor/approx_kl": approx_kl.detach(),
