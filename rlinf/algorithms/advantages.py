@@ -245,11 +245,11 @@ def compute_gspo_advantages(
 
     grouped_rewards = rewards.view(-1, group_size)  # [num_groups, group_size]
 
-    group_sum = grouped_rewards.sum(dim=-1, keepdim=True)   # [num_groups, 1]
-    # mean of r_j for j != i: (sum_all - r_i) / (G - 1)
-    pairwise_baseline = (group_sum - grouped_rewards) / (group_size - 1)
+    # Eq. 16: normalize by mean and std over all G trajectories in the group
+    mean = grouped_rewards.mean(dim=-1, keepdim=True)  # [num_groups, 1]
+    std  = grouped_rewards.std(dim=-1, keepdim=True)   # [num_groups, 1]
 
-    advantages = grouped_rewards - pairwise_baseline  # r_i - mean_{j!=i}(r_j)
+    advantages = (grouped_rewards - mean) / (std + 1e-6)  # [num_groups, group_size]
     advantages = advantages.view(-1)  # Flatten to [num_groups * group_size]
 
     # Broadcast sequence-level advantage to all tokens in each sequence
