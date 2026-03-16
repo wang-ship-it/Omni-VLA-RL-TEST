@@ -38,7 +38,7 @@ runner:
 algorithm:
   normalize_advantages: True
   kl_penalty: kl
-  group_size: 1
+  group_size: 8
   reward_coef: 1.0
 
   rollout_epoch: 8
@@ -129,7 +129,7 @@ actor:
       detach_critic_input: True
 
   optim:
-    lr: 5.0e-6
+    lr: 1e-5
     value_lr: 1.0e-4
     adam_beta1: 0.9
     adam_beta2: 0.95
