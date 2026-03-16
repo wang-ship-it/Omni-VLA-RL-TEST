@@ -225,6 +225,7 @@ def compute_gspo_advantages(
     rewards: torch.Tensor,
     loss_mask: torch.Tensor,
     group_size: int,
+    **kwargs,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Compute advantages for GSPO (Group-level Sequence Policy Optimization).
