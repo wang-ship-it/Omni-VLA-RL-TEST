@@ -225,6 +225,7 @@ def compute_gspo_advantages(
     rewards: torch.Tensor,
     loss_mask: torch.Tensor,
     group_size: int,
+    task_type: str = None,
     **kwargs,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
