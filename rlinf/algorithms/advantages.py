@@ -221,32 +221,35 @@ def compute_grpo_dynamic_advantages(
 
 
 @register_advantage("gspo")
-def compute_gspo_advantages_and_returns(
+def compute_gspo_advantages(
     rewards: torch.Tensor,
-    gamma: float = 1.0,
-    gae_lambda: float = 1.0,
-    values: Optional[torch.Tensor] = None,
-    normalize_advantages: bool = True,
-    normalize_returns: bool = False,
-    loss_mask: Optional[torch.Tensor] = None,
-    dones: Optional[torch.Tensor] = None,
-    **kwargs,
+    loss_mask: torch.Tensor,
+    group_size: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Compute advantages for GSPO (Group-level Sequence Policy Optimization).
-    Uses GAE for advantage estimation, paired with sequence-level GSPO loss.
+    Uses pairwise ranking: A_i = mean(r_i - r_j) for all j != i in the group.
+
+    Args:
+        rewards (torch.Tensor): Reward or score values. Shape: [num_groups * group_size]
+        loss_mask (torch.Tensor): Loss mask for valid entries. Shape: [seq_len, num_groups * group_size]
+        group_size (int): Number of sequences per group.
+
+    Returns:
+        tuple[torch.Tensor, torch.Tensor]: (advantages, None)
     """
-    return compute_gae_advantages_and_returns(
-        rewards=rewards,
-        gamma=gamma,
-        gae_lambda=gae_lambda,
-        values=values,
-        normalize_advantages=normalize_advantages,
-        normalize_returns=normalize_returns,
-        loss_mask=loss_mask,
-        dones=dones,
-        **kwargs,
-    )
+    grouped_rewards = rewards.view(-1, group_size)  # [num_groups, group_size]
+
+    group_sum = grouped_rewards.sum(dim=-1, keepdim=True)   # [num_groups, 1]
+    # mean of r_j for j != i: (sum_all - r_i) / (G - 1)
+    pairwise_baseline = (group_sum - grouped_rewards) / (group_size - 1)
+
+    advantages = grouped_rewards - pairwise_baseline  # r_i - mean_{j!=i}(r_j)
+
+    # Broadcast sequence-level advantage to all tokens in each sequence
+    advantages = (torch.zeros_like(loss_mask) + advantages.view(1, -1)) * loss_mask
+
+    return advantages, None
 
 
 @register_advantage("reinpp")
