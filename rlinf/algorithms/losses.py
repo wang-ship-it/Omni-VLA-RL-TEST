@@ -316,7 +316,7 @@ def compute_gspo_actor_loss_fn(
     reduce_dims = tuple(range(1, logprobs.ndim))
 
     # -------------------------------------------------
-    # 1️⃣ 计算 sequence-level log-ratio (SUM)
+    # 1️⃣ 计算 sequence-level log-ratio (MEAN, per paper eq.15: 1/|A| * sum)
     # -------------------------------------------------
     log_diff = torch.where(
         loss_mask,
@@ -324,7 +324,8 @@ def compute_gspo_actor_loss_fn(
         torch.zeros_like(logprobs),
     )
 
-    seq_log_ratio = log_diff.sum(dim=reduce_dims, keepdim=True)
+    token_count = loss_mask.sum(dim=reduce_dims, keepdim=True).clamp(min=1)
+    seq_log_ratio = log_diff.sum(dim=reduce_dims, keepdim=True) / token_count
 
     # 数值稳定
     seq_log_ratio = torch.clamp(
@@ -336,7 +337,7 @@ def compute_gspo_actor_loss_fn(
     ratio = torch.exp(seq_log_ratio)
 
     # -------------------------------------------------
-    # 2️⃣ 计算 sequence-level advantage (SUM)
+    # 2️⃣ 计算 sequence-level advantage (MEAN, advantage 已是 sequence-level 常量)
     # -------------------------------------------------
     if advantages.ndim != logprobs.ndim:
         advantages = advantages.expand_as(logprobs)
@@ -347,7 +348,7 @@ def compute_gspo_actor_loss_fn(
         torch.zeros_like(advantages),
     )
 
-    seq_adv = adv_masked.sum(dim=reduce_dims, keepdim=True)
+    seq_adv = adv_masked.sum(dim=reduce_dims, keepdim=True) / token_count
 
     # -------------------------------------------------
     # 3️⃣ PPO Clipping (sequence-level)
@@ -364,7 +365,6 @@ def compute_gspo_actor_loss_fn(
     policy_loss = torch.max(policy_loss1, policy_loss2)
 
     # 有效序列 mask
-    token_count = loss_mask.sum(dim=reduce_dims, keepdim=True)
     seq_mask = token_count > 0
 
     policy_loss_mean = loss_agg_func(policy_loss, seq_mask)
