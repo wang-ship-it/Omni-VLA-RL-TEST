@@ -48,7 +48,7 @@ algorithm:
   logprob_type: chunk_level
   entropy_type: token_level
 
-  update_epoch: 4
+  update_epoch: 1
   adv_type: gspo
   loss_type: gspo
   loss_agg_func: "token-mean"
@@ -128,7 +128,7 @@ actor:
       detach_critic_input: True
 
   optim:
-    lr: 1e-5
+    lr: 5e-6
     value_lr: 1.0e-4
     adam_beta1: 0.9
     adam_beta2: 0.95
