@@ -316,7 +316,7 @@ def compute_gspo_actor_loss_fn(
     reduce_dims = tuple(range(1, logprobs.ndim))
 
     # -------------------------------------------------
-    # 1️⃣ 计算 sequence-level log-ratio (MEAN, per paper eq.15: 1/|A| * sum)
+    # 1️⃣ 计算 sequence-level log-ratio (MEAN, per paper Eq.14: 1/|A| * sum)
     # -------------------------------------------------
     log_diff = torch.where(
         loss_mask,

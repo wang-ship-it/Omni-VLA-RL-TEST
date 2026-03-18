@@ -326,8 +326,10 @@ def preprocess_loss_inputs(
 
     elif logprob_type == "chunk_level":
         # logprobs, old_logprobs: [bsz, num_action_chunks, action_dim] -> [bsz]
-        logprobs = logprobs.reshape(bsz, -1, single_action_dim).sum(dim=[1, 2])
-        old_logprobs = old_logprobs.reshape(bsz, -1, single_action_dim).sum(dim=[1, 2])
+        logprobs_reshaped = logprobs.reshape(bsz, -1, single_action_dim)
+        num_elements = logprobs_reshaped.shape[1] * logprobs_reshaped.shape[2]
+        logprobs = logprobs_reshaped.sum(dim=[1, 2]) / num_elements
+        old_logprobs = old_logprobs.reshape(bsz, -1, single_action_dim).sum(dim=[1, 2]) / num_elements
 
     target_shape = logprobs.shape
     advantages = expand_to_target_dim(advantages, target_shape)
