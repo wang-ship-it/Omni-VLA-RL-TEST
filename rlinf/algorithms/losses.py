@@ -344,6 +344,7 @@ def compute_ppo_critic_loss(
     ev_returns = ev_returns[valid_mask]
     ev_values = ev_values[valid_mask]
 
+    var_eps = 1e-8
     if ev_returns.numel() < 2:
         explained_variance = torch.tensor(0.0, device=returns.device)
         ev_valid = False
@@ -370,7 +371,7 @@ def compute_ppo_critic_loss(
         f"[DEBUG] Final explained_variance(raw): {explained_variance.item() if torch.isfinite(explained_variance).item() else 'NaN'}"
     )
     print(
-        f"[DEBUG] Final explained_variance(logged): {explained_variance_for_log.item():.6f}, valid={ev_valid}, source={ev_source}"
+        f"[DEBUG] Final explained_variance(logged): {explained_variance_for_log.item():.6f}, valid={ev_valid}"
     )
     print("[DEBUG PPO CRITIC LOSS] ====== EXITING ======" + "\n" + "="*80)
 
