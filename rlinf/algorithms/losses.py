@@ -338,6 +338,8 @@ def compute_ppo_critic_loss(
     _debug_tensor_health("masked_values", masked_values)
     _debug_tensor_health("masked_returns_minus_values", masked_returns - masked_values)
 
+    ev_returns = masked_returns
+    ev_values = masked_values
     valid_mask = torch.isfinite(ev_returns) & torch.isfinite(ev_values)
     ev_returns = ev_returns[valid_mask]
     ev_values = ev_values[valid_mask]
