@@ -114,8 +114,8 @@ rollout:
 actor:
   group_name: "ActorGroup"
   training_backend: "fsdp"
-  micro_batch_size: 4
-  global_batch_size: 128
+  micro_batch_size: 128
+  global_batch_size: 2018
   seed: 42
   enable_offload: False
 
@@ -123,7 +123,11 @@ actor:
     model_path: "/root/data/kaelynwang/Omni_VLA/omni_vla_checkpoint_10000"
     num_action_chunks: 5
     add_value_head: True
-    gradient_checkpointing: False
+    freeze_vggt: True 
+    freeze_spatial_expert: True
+    gradient_checkpointing: True
+    is_lora: True
+    lora_rank: 32
     omni_vla:
       config_name: omni_vla_libero
       detach_critic_input: True
@@ -141,7 +145,7 @@ actor:
   fsdp_config:
     strategy: "fsdp"
     sharding_strategy: "no_shard"
-    gradient_checkpointing: False
+    gradient_checkpointing: True
     use_orig_params: True
     mixed_precision:
       param_dtype: ${actor.model.precision}
