@@ -381,7 +381,6 @@ def compute_ppo_critic_loss(
         "critic/value_clip_ratio": value_clip_ratio.detach().item(),
         "critic/explained_variance": explained_variance_for_log.detach().item(),
         "critic/explained_variance_valid": float(ev_valid),
-        "critic/explained_variance_source_masked": 1.0 if ev_source == "masked" else 0.0,
     }
     return value_loss, metrics_data
 
