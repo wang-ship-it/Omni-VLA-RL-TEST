@@ -948,9 +948,37 @@ class FSDPActor(FSDPModelManager, Worker):
         Args:
             batch (Dict[str, torch.Tensor]): The rollout batch.
         """
+        print("\n" + "="*80)
+        print("[DEBUG ADV COMPUTE] ====== ENTERING compute_advantages_and_returns ======")
+        print(f"[DEBUG ADV COMPUTE] batch keys: {list(batch.keys())}")
+        
+        if "rewards" in batch:
+            r = batch["rewards"]
+            print(f"[DEBUG ADV COMPUTE] rewards shape: {r.shape}, dtype: {r.dtype}")
+            print(f"[DEBUG ADV COMPUTE] rewards stats: min={r.min().item():.6f}, max={r.max().item():.6f}, mean={r.mean().item():.6f}")
+            print(f"[DEBUG ADV COMPUTE] rewards sample (flattened, first 30): {r.flatten()[:30]}")
+        
+        if "response_mask" in batch:
+            rm = batch["response_mask"]
+            print(f"[DEBUG ADV COMPUTE] response_mask shape: {rm.shape}")
+            print(f"[DEBUG ADV COMPUTE] response_mask sample (first 5 rows): {rm[:5].flatten()[:30]}")
+        
+        if "dones" in batch:
+            d = batch["dones"]
+            print(f"[DEBUG ADV COMPUTE] dones shape: {d.shape}")
+            print(f"[DEBUG ADV COMPUTE] dones sample: {d.flatten()[:20]}")
+            print(f"[DEBUG ADV COMPUTE] dones sum (episode ends): {d.sum().item()}")
+        
+        print(f"[DEBUG ADV COMPUTE] adv_type: {self.cfg.algorithm.adv_type}")
+        print(f"[DEBUG ADV COMPUTE] group_size: {self.cfg.algorithm.group_size}")
+        print(f"[DEBUG ADV COMPUTE] task_type: {self.task_type}")
+        
         with self.worker_timer():
             if batch.get("advantages", None) is None:
                 mask = batch["response_mask"][:, -self.response_len :]
+                print(f"[DEBUG ADV COMPUTE] mask shape (for advantage calc): {mask.shape}")
+                print(f"[DEBUG ADV COMPUTE] mask true count: {mask.sum().item()}")
+                
                 advantages, _ = calculate_adv_and_returns(
                     task_type=self.task_type,
                     adv_type=self.cfg.algorithm.adv_type,
@@ -970,7 +998,11 @@ class FSDPActor(FSDPModelManager, Worker):
                     ),
                 )
                 batch["advantages"] = advantages
+                print(f"[DEBUG ADV COMPUTE] advantages shape (AFTER calc): {advantages.shape}")
+                print(f"[DEBUG ADV COMPUTE] advantages stats: min={advantages.min().item():.6f}, max={advantages.max().item():.6f}, mean={advantages.mean().item():.6f}")
 
+        print(f"[DEBUG ADV COMPUTE] Final batch['advantages'] shape: {batch.get('advantages', torch.tensor([])).shape}")
+        print("[DEBUG ADV COMPUTE] ====== EXITING ======" + "\n" + "="*80 + "\n")
         return batch
 
 
@@ -1280,6 +1312,68 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
         """
         Run the training process using the received rollout batch.
         """
+        print("\n" + "="*80)
+        print("[DEBUG TRAIN DATA] ====== ENTERING run_training ======")
+        print(f"[DEBUG TRAIN DATA] rollout_batch keys: {list(self.rollout_batch.keys())}")
+        for key, val in self.rollout_batch.items():
+            if isinstance(val, torch.Tensor):
+                print(f"[DEBUG TRAIN DATA]   {key}: shape={val.shape}, dtype={val.dtype}")
+                if val.numel() < 50:
+                    print(f"[DEBUG TRAIN DATA]   {key} values: {val.flatten()[:50]}")
+                else:
+                    print(f"[DEBUG TRAIN DATA]   {key} stats: min={val.min().item():.6f}, max={val.max().item():.6f}, mean={val.mean().item():.6f}")
+            elif isinstance(val, dict):
+                print(f"[DEBUG TRAIN DATA]   {key}: dict with keys {list(val.keys())}")
+                for subkey, subval in val.items():
+                    if isinstance(subval, torch.Tensor):
+                        print(f"[DEBUG TRAIN DATA]     {subkey}: shape={subval.shape}")
+                    else:
+                        print(f"[DEBUG TRAIN DATA]     {subkey}: {type(subval)}")
+            else:
+                print(f"[DEBUG TRAIN DATA]   {key}: {type(val)}")
+        
+        print("\n[DEBUG TRAIN DATA] === forward_inputs sample ===")
+        if "forward_inputs" in self.rollout_batch:
+            fi = self.rollout_batch["forward_inputs"]
+            if isinstance(fi, dict):
+                for fk, fv in fi.items():
+                    if isinstance(fv, torch.Tensor):
+                        print(f"[DEBUG TRAIN DATA]   forward_inputs[{fk}]: shape={fv.shape}")
+                    elif isinstance(fv, (list, tuple)):
+                        print(f"[DEBUG TRAIN DATA]   forward_inputs[{fk}]: list of len {len(fv)}")
+                        if len(fv) > 0 and isinstance(fv[0], torch.Tensor):
+                            print(f"[DEBUG TRAIN DATA]     first element shape: {fv[0].shape}")
+                    elif isinstance(fv, str):
+                        print(f"[DEBUG TRAIN DATA]   forward_inputs[{fk}]: \"{fv[:100]}...\"" if len(fv) > 100 else f"[DEBUG TRAIN DATA]   forward_inputs[{fk}]: \"{fv}\"")
+                    else:
+                        print(f"[DEBUG TRAIN DATA]   forward_inputs[{fk}]: {type(fv)}")
+        
+        print("\n[DEBUG TRAIN DATA] === rewards sample ===")
+        if "rewards" in self.rollout_batch:
+            r = self.rollout_batch["rewards"]
+            print(f"[DEBUG TRAIN DATA] rewards shape: {r.shape}")
+            print(f"[DEBUG TRAIN DATA] rewards sample values: {r.flatten()[:20]}")
+        
+        print("\n[DEBUG TRAIN DATA] === prev_logprobs sample ===")
+        if "prev_logprobs" in self.rollout_batch:
+            plp = self.rollout_batch["prev_logprobs"]
+            print(f"[DEBUG TRAIN DATA] prev_logprobs shape: {plp.shape}")
+            print(f"[DEBUG TRAIN DATA] prev_logprobs sample: {plp.flatten()[:20]}")
+        
+        print("\n[DEBUG TRAIN DATA] === response_mask sample ===")
+        if "response_mask" in self.rollout_batch:
+            rm = self.rollout_batch["response_mask"]
+            print(f"[DEBUG TRAIN DATA] response_mask shape: {rm.shape}")
+            print(f"[DEBUG TRAIN DATA] response_mask sample (first 5 rows): {rm[:5].flatten()[:30]}")
+        
+        print("\n[DEBUG TRAIN DATA] === dones sample ===")
+        if "dones" in self.rollout_batch:
+            d = self.rollout_batch["dones"]
+            print(f"[DEBUG TRAIN DATA] dones shape: {d.shape}")
+            print(f"[DEBUG TRAIN DATA] dones sample: {d.flatten()[:20]}")
+        
+        print("[DEBUG TRAIN DATA] ====== EXITING ======" + "\n" + "="*80 + "\n")
+        
         if self.is_weight_offloaded:
             self.load_param_and_grad(self.device)
         if self.is_optimizer_offloaded:
@@ -1389,11 +1483,69 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
                             **kwargs,
                         )
 
+                    print("\n" + "="*80)
+                    print("[DEBUG FORWARD OUTPUT] ====== output_dict contents ======")
+                    for ok, ov in output_dict.items():
+                        if isinstance(ov, torch.Tensor):
+                            print(f"[DEBUG FORWARD OUTPUT]   {ok}: shape={ov.shape}, dtype={ov.dtype}")
+                            if ov.numel() < 20:
+                                print(f"[DEBUG FORWARD OUTPUT]   {ok} values: {ov.flatten()}")
+                            else:
+                                print(f"[DEBUG FORWARD OUTPUT]   {ok} stats: min={ov.min().item():.6f}, max={ov.max().item():.6f}, mean={ov.mean().item():.6f}")
+                        elif isinstance(ov, (list, tuple)):
+                            print(f"[DEBUG FORWARD OUTPUT]   {ok}: list/tuple of len {len(ov)}")
+                        else:
+                            print(f"[DEBUG FORWARD OUTPUT]   {ok}: {type(ov)}")
+                    print("[DEBUG FORWARD OUTPUT] ====== END output_dict ======" + "\n" + "="*80 + "\n")
+
                     if (
                         SupportedModel(self.cfg.actor.model.model_type)
                         == SupportedModel.GR00T
                     ):
                         prev_logprobs = output_dict["prev_logprobs"]
+
+                    print("\n" + "="*80)
+                    print("[DEBUG POLICY LOSS KWARGS] ====== kwargs for policy_loss ======")
+                    print(f"[DEBUG POLICY LOSS KWARGS]   loss_type: {self.cfg.algorithm.loss_type}")
+                    print(f"[DEBUG POLICY LOSS KWARGS]   logprob_type: {self.cfg.algorithm.logprob_type}")
+                    print(f"[DEBUG POLICY LOSS KWARGS]   reward_type: {self.cfg.algorithm.reward_type}")
+                    print(f"[DEBUG POLICY LOSS KWARGS]   single_action_dim: {self.cfg.actor.model.get('action_dim', 7)}")
+                    print(f"[DEBUG POLICY LOSS KWARGS]   clip_ratio_high: {self.cfg.algorithm.clip_ratio_high}")
+                    print(f"[DEBUG POLICY LOSS KWARGS]   clip_ratio_low: {self.cfg.algorithm.clip_ratio_low}")
+                    print(f"[DEBUG POLICY LOSS KWARGS]   value_clip: {self.cfg.algorithm.get('value_clip', None)}")
+                    print(f"[DEBUG POLICY LOSS KWARGS]   huber_delta: {self.cfg.algorithm.get('huber_delta', None)}")
+                    print(f"[DEBUG POLICY LOSS KWARGS]   task_type: {self.cfg.runner.task_type}")
+                    print(f"[DEBUG POLICY LOSS KWARGS]   critic_warmup: {self.optimizer_steps < self.critic_warmup_steps}")
+                    
+                    logprobs_sample = output_dict["logprobs"]
+                    print(f"[DEBUG POLICY LOSS KWARGS]   logprobs (output): shape={logprobs_sample.shape}")
+                    print(f"[DEBUG POLICY LOSS KWARGS]   logprobs sample: {logprobs_sample.flatten()[:10]}")
+                    
+                    print(f"[DEBUG POLICY LOSS KWARGS]   prev_logprobs shape: {prev_logprobs.shape}")
+                    print(f"[DEBUG POLICY LOSS KWARGS]   prev_logprobs sample: {prev_logprobs.flatten()[:10]}")
+                    
+                    print(f"[DEBUG POLICY LOSS KWARGS]   advantages shape: {advantages.shape}")
+                    print(f"[DEBUG POLICY LOSS KWARGS]   advantages sample: {advantages.flatten()[:10]}")
+                    
+                    if returns is not None:
+                        print(f"[DEBUG POLICY LOSS KWARGS]   returns shape: {returns.shape}")
+                        print(f"[DEBUG POLICY LOSS KWARGS]   returns sample: {returns.flatten()[:10]}")
+                    else:
+                        print(f"[DEBUG POLICY LOSS KWARGS]   returns: None")
+                    
+                    if prev_values is not None:
+                        print(f"[DEBUG POLICY LOSS KWARGS]   prev_values shape: {prev_values.shape}")
+                        print(f"[DEBUG POLICY LOSS KWARGS]   prev_values sample: {prev_values.flatten()[:10]}")
+                    else:
+                        print(f"[DEBUG POLICY LOSS KWARGS]   prev_values: None")
+                    
+                    if loss_mask is not None:
+                        print(f"[DEBUG POLICY LOSS KWARGS]   loss_mask shape: {loss_mask.shape}")
+                        print(f"[DEBUG POLICY LOSS KWARGS]   loss_mask true count: {loss_mask.sum().item()}")
+                    else:
+                        print(f"[DEBUG POLICY LOSS KWARGS]   loss_mask: None")
+                    
+                    print("[DEBUG POLICY LOSS KWARGS] ====== END kwargs ======" + "\n" + "="*80 + "\n")
 
                     kwargs = {
                         "loss_type": self.cfg.algorithm.loss_type,

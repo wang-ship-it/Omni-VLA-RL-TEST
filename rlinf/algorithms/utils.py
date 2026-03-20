@@ -76,18 +76,39 @@ def preprocess_embodied_advantages_inputs(
     Preprocess inputs before computing advantages & returns.
     Unify names & formats, align with math interfaces.
     """
+    print("\n" + "="*80)
+    print("[DEBUG EMBODIED PREPROCESS] ====== ENTERING preprocess_embodied_advantages_inputs ======")
+    print(f"[DEBUG EMBODIED] reward_type: {kwargs.get('reward_type', 'N/A')}")
+    print(f"[DEBUG EMBODIED] rewards.shape (INPUT): {rewards.shape}")
+    print(f"[DEBUG EMBODIED] rewards stats: min={rewards.min().item():.6f}, max={rewards.max().item():.6f}, mean={rewards.mean().item():.6f}")
+    print(f"[DEBUG EMBODIED] dones.shape (INPUT): {dones.shape}")
+    if values is not None:
+        print(f"[DEBUG EMBODIED] values.shape (INPUT): {values.shape}")
+        print(f"[DEBUG EMBODIED] values stats: min={values.min().item():.6f}, max={values.max().item():.6f}, mean={values.mean().item():.6f}")
+    else:
+        print("[DEBUG EMBODIED] values is None")
+    if loss_mask is not None:
+        print(f"[DEBUG EMBODIED] loss_mask.shape (INPUT): {loss_mask.shape}")
+    if loss_mask_sum is not None:
+        print(f"[DEBUG EMBODIED] loss_mask_sum.shape (INPUT): {loss_mask_sum.shape}")
+        
     if kwargs["reward_type"] == "chunk_level":
-        # TODO: need check
-        # rewards, dones, loss_mask, loss_mask_sum: [n_chunk_steps, bsz, num_action_chunks] -> [n_chunk_steps, bsz, 1]
+        print("[DEBUG EMBODIED] reward_type == chunk_level, applying sum/max preprocessing...")
         rewards = rewards.sum(dim=-1, keepdim=True)
+        print(f"[DEBUG EMBODIED] rewards.shape AFTER sum: {rewards.shape}")
         dones = dones.max(dim=-1, keepdim=True)[0]
+        print(f"[DEBUG EMBODIED] dones.shape AFTER max: {dones.shape}")
         if loss_mask is not None:
             loss_mask = loss_mask.max(dim=-1, keepdim=True)[0]
+            print(f"[DEBUG EMBODIED] loss_mask.shape AFTER max: {loss_mask.shape}")
         if loss_mask_sum is not None:
             loss_mask_sum = loss_mask_sum.max(dim=-1, keepdim=True)[0]
+            print(f"[DEBUG EMBODIED] loss_mask_sum.shape AFTER max: {loss_mask_sum.shape}")
 
     num_chunk, bsz, chunk_size = rewards.shape
     n_steps = num_chunk * chunk_size
+    print(f"[DEBUG EMBODIED] num_chunk: {num_chunk}, bsz: {bsz}, chunk_size: {chunk_size}")
+    print(f"[DEBUG EMBODIED] n_steps (total steps): {n_steps}")
     kwargs.update(
         {
             "num_chunk": num_chunk,
@@ -101,22 +122,29 @@ def preprocess_embodied_advantages_inputs(
     # Reshape -> [n_steps, bsz]
     # Rewards [n_steps, bsz]
     rewards = rewards.transpose(1, 2).reshape(n_steps, bsz)
+    print(f"[DEBUG EMBODIED] rewards.shape AFTER transpose+reshape: {rewards.shape}")
+    print(f"[DEBUG EMBODIED] rewards stats: min={rewards.min().item():.6f}, max={rewards.max().item():.6f}, mean={rewards.mean().item():.6f}")
 
     # Loss Mask (T steps) [bsz, n_steps]
     if loss_mask is not None:
         loss_mask = loss_mask.transpose(1, 2).reshape(n_steps, bsz)
+        print(f"[DEBUG EMBODIED] loss_mask.shape AFTER transpose+reshape: {loss_mask.shape}")
 
     # Dones (T+1 steps) [num-chunk+1, bsz, chunk-size]
     flattened_dones_full = dones.transpose(1, 2).reshape(
         (num_chunk + 1) * chunk_size, bsz
     )
     dones = flattened_dones_full[-(n_steps + 1) :]
+    print(f"[DEBUG EMBODIED] dones.shape AFTER flatten: {dones.shape}")
+    print(f"[DEBUG EMBODIED] dones[-1] sum (episode ends): {dones[-1].sum().item()}")
 
     if kwargs["adv_type"] == "gae":
         flattened_values_full = values.transpose(1, 2).reshape(
             (num_chunk + 1) * chunk_size, bsz
         )
         values = flattened_values_full[: n_steps + 1]
+        print(f"[DEBUG EMBODIED] values.shape AFTER flatten: {values.shape}")
+        print(f"[DEBUG EMBODIED] values stats: min={values.min().item():.6f}, max={values.max().item():.6f}, mean={values.mean().item():.6f}")
 
     kwargs.update(
         {
@@ -127,7 +155,7 @@ def preprocess_embodied_advantages_inputs(
             "loss_mask_sum": loss_mask_sum,
         }
     )
-
+    print("[DEBUG EMBODIED] ====== EXITING ======" + "\n" + "="*80 + "\n")
     return kwargs
 
 
@@ -162,15 +190,28 @@ def postprocess_embodied_advantages_outputs(
     """
     Post-process results for Embodiment tasks; unflatten tensors.
     """
+    print("\n" + "="*80)
+    print("[DEBUG POSTPROCESS ADV] ====== ENTERING postprocess_embodied_advantages_outputs ======")
+    print(f"[DEBUG POSTPROCESS ADV] num_chunk: {num_chunk}, chunk_size: {chunk_size}")
+    print(f"[DEBUG POSTPROCESS ADV] advantages.shape (input): {advantages.shape}")
+    if returns is not None:
+        print(f"[DEBUG POSTPROCESS ADV] returns.shape (input): {returns.shape}")
+    
     res = {}
 
     advantages = advantages.reshape(num_chunk, chunk_size, -1).transpose(1, 2)
+    print(f"[DEBUG POSTPROCESS ADV] advantages.shape (after reshape+transpose): {advantages.shape}")
+    print(f"[DEBUG POSTPROCESS ADV] advantages stats: min={advantages.min().item():.6f}, max={advantages.max().item():.6f}, mean={advantages.mean().item():.6f}")
     res.update({"advantages": advantages})
 
     if returns is not None:
         returns = returns.reshape(num_chunk, chunk_size, -1).transpose(1, 2)
+        print(f"[DEBUG POSTPROCESS ADV] returns.shape (after reshape+transpose): {returns.shape}")
+        print(f"[DEBUG POSTPROCESS ADV] returns stats: min={returns.min().item():.6f}, max={returns.max().item():.6f}, mean={returns.mean().item():.6f}")
         res.update({"returns": returns})
 
+    print(f"[DEBUG POSTPROCESS ADV] Final res keys: {list(res.keys())}")
+    print("[DEBUG POSTPROCESS ADV] ====== EXITING ======" + "\n" + "="*80 + "\n")
     return res
 
 
@@ -295,22 +336,46 @@ def preprocess_loss_inputs(
     reward_type: Optional[str] = None,
     **kwargs,
 ) -> dict:
+    print("\n" + "="*80)
+    print("[DEBUG PREPROCESS] ====== ENTERING preprocess_loss_inputs ======")
+    print(f"[DEBUG PREPROCESS] reward_type: {reward_type}, logprob_type: {logprob_type}")
+    print(f"[DEBUG PREPROCESS] logprobs.shape: {logprobs.shape}, dtype: {logprobs.dtype}")
+    print(f"[DEBUG PREPROCESS] old_logprobs.shape: {old_logprobs.shape}")
+    print(f"[DEBUG PREPROCESS] advantages.shape BEFORE flatten: {advantages.shape}")
+    if loss_mask is not None:
+        print(f"[DEBUG PREPROCESS] loss_mask.shape BEFORE flatten: {loss_mask.shape}")
+    if values is not None:
+        print(f"[DEBUG PREPROCESS] values.shape BEFORE flatten: {values.shape}")
+    if prev_values is not None:
+        print(f"[DEBUG PREPROCESS] prev_values.shape BEFORE flatten: {prev_values.shape}")
+    if returns is not None:
+        print(f"[DEBUG PREPROCESS] returns.shape BEFORE flatten: {returns.shape}")
+    print(f"[DEBUG PREPROCESS] single_action_dim: {single_action_dim}")
+    
     if reward_type == "chunk_level":
+        print("[DEBUG PREPROCESS] reward_type == chunk_level, flattening tensors...")
         advantages = advantages.flatten()
+        print(f"[DEBUG PREPROCESS] advantages.shape AFTER flatten: {advantages.shape}")
         if loss_mask is not None:
             loss_mask = loss_mask.flatten()
+            print(f"[DEBUG PREPROCESS] loss_mask.shape AFTER flatten: {loss_mask.shape}")
         if loss_mask_sum is not None:
             loss_mask_sum = loss_mask_sum.flatten()
         if values is not None:
             values = values.flatten()
+            print(f"[DEBUG PREPROCESS] values.shape AFTER flatten: {values.shape}")
         if prev_values is not None:
             prev_values = prev_values.flatten()
+            print(f"[DEBUG PREPROCESS] prev_values.shape AFTER flatten: {prev_values.shape}")
         if returns is not None:
             returns = returns.flatten()
+            print(f"[DEBUG PREPROCESS] returns.shape AFTER flatten: {returns.shape}")
 
     bsz = logprobs.shape[0]
+    print(f"[DEBUG PREPROCESS] bsz (batch size): {bsz}")
+    
     if logprob_type == "token_level":
-        # logprobs, old_logprobs: [bsz, num_action_chunks, action_dim] -> [bsz, num_action_chunks, action_dim]
+        print("[DEBUG PREPROCESS] logprob_type == token_level")
         logprobs = logprobs.reshape(bsz, -1, single_action_dim)
         old_logprobs = old_logprobs.reshape(bsz, -1, single_action_dim)
         advantages = advantages.unsqueeze(-1)
@@ -320,24 +385,39 @@ def preprocess_loss_inputs(
             loss_mask_sum = loss_mask_sum.unsqueeze(-1)
 
     elif logprob_type == "action_level":
-        # logprobs, old_logprobs: [bsz, num_action_chunks, action_dim] -> [bsz, num_action_chunks]
+        print("[DEBUG PREPROCESS] logprob_type == action_level")
         logprobs = logprobs.reshape(bsz, -1, single_action_dim).sum(dim=-1)
         old_logprobs = old_logprobs.reshape(bsz, -1, single_action_dim).sum(dim=-1)
 
     elif logprob_type == "chunk_level":
-        # logprobs, old_logprobs: [bsz, num_action_chunks, action_dim] -> [bsz]
+        print("[DEBUG PREPROCESS] logprob_type == chunk_level")
         logprobs_reshaped = logprobs.reshape(bsz, -1, single_action_dim)
         num_elements = logprobs_reshaped.shape[1] * logprobs_reshaped.shape[2]
+        print(f"[DEBUG PREPROCESS] num_elements (action_chunks * action_dim): {num_elements}")
         logprobs = logprobs_reshaped.sum(dim=[1, 2]) / num_elements
         old_logprobs = old_logprobs.reshape(bsz, -1, single_action_dim).sum(dim=[1, 2]) / num_elements
+        print(f"[DEBUG PREPROCESS] logprobs.shape AFTER chunk_level: {logprobs.shape}")
+        print(f"[DEBUG PREPROCESS] logprobs stats: min={logprobs.min().item():.6f}, max={logprobs.max().item():.6f}, mean={logprobs.mean().item():.6f}")
+        print(f"[DEBUG PREPROCESS] old_logprobs stats: min={old_logprobs.min().item():.6f}, max={old_logprobs.max().item():.6f}, mean={old_logprobs.mean().item():.6f}")
 
     target_shape = logprobs.shape
+    print(f"[DEBUG PREPROCESS] target_shape for expansion: {target_shape}")
     advantages = expand_to_target_dim(advantages, target_shape)
     loss_mask = expand_to_target_dim(loss_mask, target_shape)
     loss_mask_sum = expand_to_target_dim(loss_mask_sum, target_shape)
     values = expand_to_target_dim(values, target_shape)
     prev_values = expand_to_target_dim(prev_values, target_shape)
     returns = expand_to_target_dim(returns, target_shape)
+    
+    print(f"[DEBUG PREPROCESS] Final shapes after expansion:")
+    print(f"[DEBUG PREPROCESS]   logprobs: {logprobs.shape}")
+    print(f"[DEBUG PREPROCESS]   old_logprobs: {old_logprobs.shape}")
+    print(f"[DEBUG PREPROCESS]   advantages: {advantages.shape}")
+    print(f"[DEBUG PREPROCESS]   loss_mask: {loss_mask.shape if loss_mask is not None else None}")
+    print(f"[DEBUG PREPROCESS]   values: {values.shape if values is not None else None}")
+    print(f"[DEBUG PREPROCESS]   prev_values: {prev_values.shape if prev_values is not None else None}")
+    print(f"[DEBUG PREPROCESS]   returns: {returns.shape if returns is not None else None}")
+    print("[DEBUG PREPROCESS] ====== EXITING ======" + "\n" + "="*80 + "\n")
 
     kwargs.update(
         {

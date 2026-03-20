@@ -53,7 +53,31 @@ def compute_gae_advantages_and_returns(
     Returns:
         Tuple[torch.Tensor, torch.Tensor]: (advantages, returns)
     """
+    print("\n" + "="*80)
+    print("[DEBUG GAE] ====== ENTERING compute_gae_advantages_and_returns ======")
+    print(f"[DEBUG GAE] rewards.shape: {rewards.shape}, dtype: {rewards.dtype}")
+    print(f"[DEBUG GAE] rewards stats: min={rewards.min().item():.6f}, max={rewards.max().item():.6f}, mean={rewards.mean().item():.6f}")
+    print(f"[DEBUG GAE] rewards has_nan: {torch.isnan(rewards).any().item()}, has_inf: {torch.isinf(rewards).any().item()}")
+    print(f"[DEBUG GAE] gamma: {gamma}, gae_lambda: {gae_lambda}")
+    if values is not None:
+        print(f"[DEBUG GAE] values.shape: {values.shape}")
+        print(f"[DEBUG GAE] values stats: min={values.min().item():.6f}, max={values.max().item():.6f}, mean={values.mean().item():.6f}")
+        print(f"[DEBUG GAE] values has_nan: {torch.isnan(values).any().item()}, has_inf: {torch.isinf(values).any().item()}")
+    else:
+        print("[DEBUG GAE] values is None (critic-free mode)")
+    if dones is not None:
+        print(f"[DEBUG GAE] dones.shape: {dones.shape}")
+        print(f"[DEBUG GAE] dones stats: sum={dones.sum().item()}, mean={dones.float().mean().item():.6f}")
+    else:
+        print("[DEBUG GAE] dones is None")
+    if loss_mask is not None:
+        print(f"[DEBUG GAE] loss_mask.shape: {loss_mask.shape}")
+        print(f"[DEBUG GAE] loss_mask true count: {loss_mask.sum().item()}")
+    else:
+        print("[DEBUG GAE] loss_mask is None")
+        
     T = rewards.shape[0]
+    print(f"[DEBUG GAE] T (sequence length): {T}")
     advantages = torch.zeros_like(rewards)
     returns = torch.zeros_like(rewards)
     gae = 0
@@ -62,7 +86,11 @@ def compute_gae_advantages_and_returns(
     if critic_free:
         gae_lambda = 1
         gamma = 1
+        print("[DEBUG GAE] Running in CRITIC-FREE mode (values is None)")
+    else:
+        print("[DEBUG GAE] Running in CRITIC mode with value function")
 
+    print(f"[DEBUG GAE] Starting GAE backward computation from step {T-1} to 0")
     for step in reversed(range(T)):
         if critic_free:
             delta = rewards[step]
@@ -72,16 +100,31 @@ def compute_gae_advantages_and_returns(
                 + gamma * values[step + 1] * (~dones[step + 1])
                 - values[step]
             )
-
+        
         gae = delta + gamma * gae_lambda * (~dones[step + 1]) * gae
         returns[step] = gae if critic_free else gae + values[step]
+        
+        if step == T-1 or step == 0:
+            print(f"[DEBUG GAE] Step {step}: delta={delta.item():.6f}, gae={gae.item():.6f}, returns[{step}]={returns[step].mean().item():.6f}")
 
     advantages = returns - values[:-1] if not critic_free else returns
+    
+    print(f"[DEBUG GAE] advantages.shape: {advantages.shape}")
+    print(f"[DEBUG GAE] advantages stats BEFORE normalization: min={advantages.min().item():.6f}, max={advantages.max().item():.6f}, mean={advantages.mean().item():.6f}")
+    print(f"[DEBUG GAE] returns.shape: {returns.shape}")
+    print(f"[DEBUG GAE] returns stats: min={returns.min().item():.6f}, max={returns.max().item():.6f}, mean={returns.mean().item():.6f}")
 
     if normalize_advantages:
+        print(f"[DEBUG GAE] Normalizing advantages...")
         advantages = safe_normalize(advantages, loss_mask=loss_mask)
+        print(f"[DEBUG GAE] advantages stats AFTER normalization: min={advantages.min().item():.6f}, max={advantages.max().item():.6f}, mean={advantages.mean().item():.6f}")
     if normalize_returns:
+        print(f"[DEBUG GAE] Normalizing returns...")
         returns = safe_normalize(returns, loss_mask=loss_mask)
+    
+    print(f"[DEBUG GAE] Final advantages stats: min={advantages.min().item():.6f}, max={advantages.max().item():.6f}, mean={advantages.mean().item():.6f}")
+    print(f"[DEBUG GAE] Final returns stats: min={returns.min().item():.6f}, max={returns.max().item():.6f}, mean={returns.mean().item():.6f}")
+    print("[DEBUG GAE] ====== EXITING ======" + "\n" + "="*80 + "\n")
 
     return advantages, returns
 

@@ -54,6 +54,23 @@ def compute_ppo_actor_loss(
     Returns:
         Tuple[torch.Tensor, Dict]: (actor_loss, metrics_dict)
     """
+    print("\n" + "="*80)
+    print("[DEBUG PPO ACTOR] ====== ENTERING compute_ppo_actor_loss ======")
+    print(f"[DEBUG PPO ACTOR] logprobs.shape: {logprobs.shape}")
+    print(f"[DEBUG PPO ACTOR] logprobs stats: min={logprobs.min().item():.6f}, max={logprobs.max().item():.6f}, mean={logprobs.mean().item():.6f}")
+    print(f"[DEBUG PPO ACTOR] old_logprobs.shape: {old_logprobs.shape}")
+    print(f"[DEBUG PPO ACTOR] old_logprobs stats: min={old_logprobs.min().item():.6f}, max={old_logprobs.max().item():.6f}, mean={old_logprobs.mean().item():.6f}")
+    print(f"[DEBUG PPO ACTOR] advantages.shape: {advantages.shape}")
+    print(f"[DEBUG PPO ACTOR] advantages stats: min={advantages.min().item():.6f}, max={advantages.max().item():.6f}, mean={advantages.mean().item():.6f}")
+    print(f"[DEBUG PPO ACTOR] clip_ratio_low: {clip_ratio_low}, clip_ratio_high: {clip_ratio_high}")
+    if clip_ratio_c is not None:
+        print(f"[DEBUG PPO ACTOR] clip_ratio_c: {clip_ratio_c}")
+    print(f"[DEBUG PPO ACTOR] loss_mask.shape: {loss_mask.shape if loss_mask is not None else None}")
+    print(f"[DEBUG PPO ACTOR] critic_warmup: {critic_warmup}")
+    if clip_log_ratio_min is not None:
+        print(f"[DEBUG PPO ACTOR] clip_log_ratio_min: {clip_log_ratio_min}")
+    if clip_log_ratio_max is not None:
+        print(f"[DEBUG PPO ACTOR] clip_log_ratio_max: {clip_log_ratio_max}")
 
     loss_mask_ratio = None
 
@@ -73,26 +90,42 @@ def compute_ppo_actor_loss(
     assert advantages.dtype == torch.float32
 
     loss_mask_count = loss_mask.count_nonzero() or 1
-    # For numerical stability.
     log_ratio = logprobs - old_logprobs
+    print(f"[DEBUG PPO ACTOR] log_ratio stats: min={log_ratio.min().item():.6f}, max={log_ratio.max().item():.6f}, mean={log_ratio.mean().item():.6f}")
+    
     if clip_log_ratio_min is not None:
         log_ratio = torch.clamp(log_ratio, min=clip_log_ratio_min)
+        print(f"[DEBUG PPO ACTOR] log_ratio AFTER clip_log_ratio_min: min={log_ratio.min().item():.6f}")
     if clip_log_ratio_max is not None:
         log_ratio = torch.clamp(log_ratio, max=clip_log_ratio_max)
+        print(f"[DEBUG PPO ACTOR] log_ratio AFTER clip_log_ratio_max: max={log_ratio.max().item():.6f}")
+        
     ratio = torch.where(loss_mask, torch.exp(log_ratio), 0)
+    print(f"[DEBUG PPO ACTOR] ratio stats: min={ratio.min().item():.6f}, max={ratio.max().item():.6f}, mean={ratio.mean().item():.6f}")
+    print(f"[DEBUG PPO ACTOR] ratio (1.0 - ratio) stats: min={(1.0-ratio).min().item():.6f}, max={(1.0-ratio).max().item():.6f}")
+    
     approx_kl = torch.where(loss_mask, log_ratio.detach(), 0.0)
 
     clipped_ratio = torch.clamp(ratio, 1.0 - clip_ratio_low, 1.0 + clip_ratio_high)
+    print(f"[DEBUG PPO ACTOR] clipped_ratio stats: min={clipped_ratio.min().item():.6f}, max={clipped_ratio.max().item():.6f}")
+    
     policy_loss1 = -advantages * ratio
     policy_loss2 = -advantages * clipped_ratio
+    print(f"[DEBUG PPO ACTOR] policy_loss1 stats: min={policy_loss1.min().item():.6f}, max={policy_loss1.max().item():.6f}")
+    print(f"[DEBUG PPO ACTOR] policy_loss2 stats: min={policy_loss2.min().item():.6f}, max={policy_loss2.max().item():.6f}")
 
     clip_mask = policy_loss1.detach() < policy_loss2.detach()
+    print(f"[DEBUG PPO ACTOR] clip_mask true count: {clip_mask.sum().item()}")
 
     policy_loss = torch.max(policy_loss1, policy_loss2)
+    print(f"[DEBUG PPO ACTOR] policy_loss (after max) stats: min={policy_loss.min().item():.6f}, max={policy_loss.max().item():.6f}")
+    
     if clip_ratio_c is not None:
         assert clip_ratio_c > 1.0, clip_ratio_c
         policy_loss3 = torch.sign(advantages) * clip_ratio_c * advantages
         dual_clip_mask = policy_loss3.detach() < policy_loss.detach()
+        print(f"[DEBUG PPO ACTOR] policy_loss3 stats: min={policy_loss3.min().item():.6f}, max={policy_loss3.max().item():.6f}")
+        print(f"[DEBUG PPO ACTOR] dual_clip_mask true count: {dual_clip_mask.sum().item()}")
         policy_loss = torch.min(policy_loss, policy_loss3)
     else:
         dual_clip_mask = torch.zeros_like(clip_mask)
@@ -102,7 +135,8 @@ def compute_ppo_actor_loss(
     )
     policy_loss = loss_agg_func(
         policy_loss, loss_mask, loss_mask_ratio
-    )  # default max_episode_steps is None
+    )
+    print(f"[DEBUG PPO ACTOR] Final policy_loss (after aggregation): {policy_loss.item():.6f}")
 
     clip_mask = policy_loss1.detach() < policy_loss2.detach()
     dual_clip_mask = (dual_clip_mask * loss_mask).bool()
@@ -114,6 +148,11 @@ def compute_ppo_actor_loss(
 
     if critic_warmup:
         policy_loss = torch.tensor(0.0, device=policy_loss.device)
+        print("[DEBUG PPO ACTOR] CRITIC WARMUP MODE - policy_loss set to 0")
+
+    print(f"[DEBUG PPO ACTOR] clip_fraction: {clip_fraction.item():.6f}")
+    print(f"[DEBUG PPO ACTOR] approx_kl: {approx_kl.item():.6f}")
+    print("[DEBUG PPO ACTOR] ====== EXITING ======" + "\n" + "="*80 + "\n")
 
     # Compile metrics for logging
     loss_mask_for_metrics = loss_mask
@@ -169,6 +208,21 @@ def compute_ppo_critic_loss(
     Returns:
         Tuple[torch.Tensor, Dict]: (critic_loss, metrics_dict)
     """
+    print("\n" + "="*80)
+    print("[DEBUG PPO CRITIC LOSS] ====== ENTERING compute_ppo_critic_loss ======")
+    print(f"[DEBUG] values.shape: {values.shape}, dtype: {values.dtype}")
+    print(f"[DEBUG] values stats: min={values.min().item():.6f}, max={values.max().item():.6f}, mean={values.mean().item():.6f}, std={values.std().item():.6f}")
+    print(f"[DEBUG] values has_nan: {torch.isnan(values).any().item()}, has_inf: {torch.isinf(values).any().item()}")
+    print(f"[DEBUG] returns.shape: {returns.shape}, dtype: {returns.dtype}")
+    print(f"[DEBUG] returns stats: min={returns.min().item():.6f}, max={returns.max().item():.6f}, mean={returns.mean().item():.6f}, std={returns.std().item():.6f}")
+    print(f"[DEBUG] returns has_nan: {torch.isnan(returns).any().item()}, has_inf: {torch.isinf(returns).any().item()}")
+    print(f"[DEBUG] prev_values.shape: {prev_values.shape if prev_values is not None else None}")
+    if prev_values is not None:
+        print(f"[DEBUG] prev_values stats: min={prev_values.min().item():.6f}, max={prev_values.max().item():.6f}, mean={prev_values.mean().item():.6f}")
+        print(f"[DEBUG] prev_values has_nan: {torch.isnan(prev_values).any().item()}, has_inf: {torch.isinf(prev_values).any().item()}")
+    print(f"[DEBUG] loss_mask.shape: {loss_mask.shape if loss_mask is not None else None}")
+    print(f"[DEBUG] value_clip: {value_clip}, huber_delta: {huber_delta}")
+    
     loss_mask_ratio = None
     loss_agg_func = masked_mean
 
@@ -183,42 +237,71 @@ def compute_ppo_critic_loss(
     value_pred_clipped = prev_values + (values - prev_values).clamp(
         -value_clip, value_clip
     )  # [bsz, ] | [bsz, chunk-step]
+    print(f"[DEBUG] value_pred_clipped.shape: {value_pred_clipped.shape}")
+    print(f"[DEBUG] (values - prev_values).shape: {(values - prev_values).shape}")
+    print(f"[DEBUG] (values - prev_values) stats: min={(values - prev_values).min().item():.6f}, max={(values - prev_values).max().item():.6f}")
 
     value_loss_original = huber_loss(
         returns - values, huber_delta
     )  # [bsz, ] | [bsz, chunk-step]
+    print(f"[DEBUG] value_loss_original.shape: {value_loss_original.shape}")
+    print(f"[DEBUG] value_loss_original stats: min={value_loss_original.min().item():.6f}, max={value_loss_original.max().item():.6f}")
+    print(f"[DEBUG] (returns - values) stats: min={(returns - values).min().item():.6f}, max={(returns - values).max().item():.6f}")
+    
     value_loss_clipped = huber_loss(
         returns - value_pred_clipped, huber_delta
     )  # [bsz, ] | [bsz, chunk-step]
     value_loss = torch.max(value_loss_original, value_loss_clipped)
     value_loss = loss_agg_func(value_loss, loss_mask, loss_mask_ratio)
+    print(f"[DEBUG] value_loss (after max & aggregation): {value_loss.item():.6f}")
 
     value_clip_indicator = (value_pred_clipped - prev_values).abs() > value_clip
     value_clip_ratio = value_clip_indicator.float().mean()
+    print(f"[DEBUG] value_clip_ratio: {value_clip_ratio.item():.6f}")
 
     # explained variance
+    print("\n[DEBUG] ====== Computing explained_variance ======")
     if loss_mask is not None:
         masked_returns = returns[loss_mask]
         masked_values = values[loss_mask]
+        print(f"[DEBUG] loss_mask true count: {loss_mask.sum().item()}")
     else:
         masked_returns = returns
         masked_values = values
-
+        print(f"[DEBUG] No loss_mask, using all data")
+    
+    print(f"[DEBUG] masked_returns.shape: {masked_returns.shape}")
+    print(f"[DEBUG] masked_returns stats: min={masked_returns.min().item():.6f}, max={masked_returns.max().item():.6f}, mean={masked_returns.mean().item():.6f}")
+    print(f"[DEBUG] masked_values.shape: {masked_values.shape}")
+    print(f"[DEBUG] masked_values stats: min={masked_values.min().item():.6f}, max={masked_values.max().item():.6f}, mean={masked_values.mean().item():.6f}")
+    
     var_returns = torch.var(masked_returns)
+    print(f"[DEBUG] var_returns: {var_returns.item():.10f}")
+    print(f"[DEBUG] var_returns is_nan: {torch.isnan(var_returns).item()}, var_returns == 0: {(var_returns == 0).item()}")
+    
     if torch.isnan(var_returns) or var_returns == 0:
         explained_variance = torch.tensor(float("nan"), device=returns.device)
+        print(f"[DEBUG] explained_variance = NaN because var_returns is NaN or 0")
     else:
         var_diff = torch.var(masked_returns - masked_values)
+        print(f"[DEBUG] var_diff (var(returns - values)): {var_diff.item():.10f}")
+        print(f"[DEBUG] var_diff is_nan: {torch.isnan(var_diff).item()}")
+        
         if torch.isnan(var_diff):
             explained_variance = torch.tensor(float("nan"), device=returns.device)
+            print(f"[DEBUG] explained_variance = NaN because var_diff is NaN")
         else:
             explained_variance = 1 - var_diff / var_returns
+            print(f"[DEBUG] explained_variance = 1 - var_diff/var_returns = 1 - {var_diff.item():.6f}/{var_returns.item():.6f} = {explained_variance.item():.6f}")
+    
+    print(f"[DEBUG] Final explained_variance: {explained_variance.item() if not torch.isnan(explained_variance).any() else 'NaN'}")
+    print("[DEBUG PPO CRITIC LOSS] ====== EXITING ======" + "\n" + "="*80)
 
     # Compile metrics for logging
     metrics_data = {
         "critic/value_loss": value_loss.detach().item(),
         "critic/value_clip_ratio": value_clip_ratio.detach().item(),
-        "critic/explained_variance": explained_variance.detach().item(),
+        "critic/explained_variance": explained_variance.detach().item() if not torch.isnan(explained_variance).any() else float('nan'),
     }
     return value_loss, metrics_data
 
