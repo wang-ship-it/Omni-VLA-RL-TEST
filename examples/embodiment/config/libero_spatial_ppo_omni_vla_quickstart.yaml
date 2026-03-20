@@ -114,7 +114,7 @@ rollout:
 actor:
   group_name: "ActorGroup"
   training_backend: "fsdp"
-  micro_batch_size: 32
+  micro_batch_size: 16
   global_batch_size: 128
   seed: 42
   enable_offload: True
