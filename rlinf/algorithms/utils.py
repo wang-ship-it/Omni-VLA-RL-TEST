@@ -88,9 +88,9 @@ def preprocess_embodied_advantages_inputs(
     else:
         print("[DEBUG EMBODIED] values is None")
     if loss_mask is not None:
-        print(f"[DEBUG EMBODIED] loss_mask.shape (INPUT): {loss_mask.shape}")
+        print(f"[DEBUG EMBODIED] loss_mask.shape (INPUT): {loss_mask.shape}, dtype: {loss_mask.dtype}")
     if loss_mask_sum is not None:
-        print(f"[DEBUG EMBODIED] loss_mask_sum.shape (INPUT): {loss_mask_sum.shape}")
+        print(f"[DEBUG EMBODIED] loss_mask_sum.shape (INPUT): {loss_mask_sum.shape}, dtype: {loss_mask_sum.dtype}")
         
     if kwargs["reward_type"] == "chunk_level":
         print("[DEBUG EMBODIED] reward_type == chunk_level, applying sum/max preprocessing...")
@@ -343,7 +343,7 @@ def preprocess_loss_inputs(
     print(f"[DEBUG PREPROCESS] old_logprobs.shape: {old_logprobs.shape}")
     print(f"[DEBUG PREPROCESS] advantages.shape BEFORE flatten: {advantages.shape}")
     if loss_mask is not None:
-        print(f"[DEBUG PREPROCESS] loss_mask.shape BEFORE flatten: {loss_mask.shape}")
+        print(f"[DEBUG PREPROCESS] loss_mask.shape BEFORE flatten: {loss_mask.shape}, dtype: {loss_mask.dtype}")
     if values is not None:
         print(f"[DEBUG PREPROCESS] values.shape BEFORE flatten: {values.shape}")
     if prev_values is not None:

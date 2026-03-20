@@ -967,7 +967,7 @@ class FSDPActor(FSDPModelManager, Worker):
             d = batch["dones"]
             print(f"[DEBUG ADV COMPUTE] dones shape: {d.shape}")
             print(f"[DEBUG ADV COMPUTE] dones sample: {d.flatten()[:20]}")
-            print(f"[DEBUG ADV COMPUTE] dones sum (episode ends): {d.sum().item()}")
+            print(f"[DEBUG ADV COMPUTE] dones sum (episode ends): {d.sum().item()}, dtype: {d.dtype}")
         
         print(f"[DEBUG ADV COMPUTE] adv_type: {self.cfg.algorithm.adv_type}")
         print(f"[DEBUG ADV COMPUTE] group_size: {self.cfg.algorithm.group_size}")
@@ -1321,7 +1321,10 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
                 if val.numel() < 50:
                     print(f"[DEBUG TRAIN DATA]   {key} values: {val.flatten()[:50]}")
                 else:
-                    print(f"[DEBUG TRAIN DATA]   {key} stats: min={val.min().item():.6f}, max={val.max().item():.6f}, mean={val.mean().item():.6f}")
+                    if val.dtype in [torch.bool, torch.uint8]:
+                        print(f"[DEBUG TRAIN DATA]   {key} stats: min={val.min().item()}, max={val.max().item()}, mean={val.float().mean().item():.6f}, sum={val.sum().item()}")
+                    else:
+                        print(f"[DEBUG TRAIN DATA]   {key} stats: min={val.min().item():.6f}, max={val.max().item():.6f}, mean={val.mean().item():.6f}")
             elif isinstance(val, dict):
                 print(f"[DEBUG TRAIN DATA]   {key}: dict with keys {list(val.keys())}")
                 for subkey, subval in val.items():
