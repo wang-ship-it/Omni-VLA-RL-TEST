@@ -12,10 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import builtins
 import os
 import time
 from functools import partial
 from typing import Optional
+
+_DEBUG_VERBOSE = (
+    os.getenv("OMNI_VLA_DEBUG_LOG", "0") == "1"
+    or os.getenv("OMNI_VLA_DEBUG_ACTOR", "0") == "1"
+)
+_DEBUG_EVERY = max(1, int(os.getenv("OMNI_VLA_DEBUG_EVERY", "1")))
+_DEBUG_COUNTER = 0
+
+
+def print(*args, **kwargs):
+    global _DEBUG_COUNTER
+    if not _DEBUG_VERBOSE:
+        return
+    _DEBUG_COUNTER += 1
+    if _DEBUG_COUNTER % _DEBUG_EVERY == 0:
+        builtins.print(*args, **kwargs)
 
 import numpy as np
 import torch

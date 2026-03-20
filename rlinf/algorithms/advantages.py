@@ -27,10 +27,16 @@ _DEBUG_VERBOSE = (
     os.getenv("OMNI_VLA_DEBUG_LOG", "0") == "1"
     or os.getenv("OMNI_VLA_DEBUG_ADV", "0") == "1"
 )
+_DEBUG_EVERY = max(1, int(os.getenv("OMNI_VLA_DEBUG_EVERY", "1")))
+_DEBUG_COUNTER = 0
 
 
 def print(*args, **kwargs):
-    if _DEBUG_VERBOSE:
+    global _DEBUG_COUNTER
+    if not _DEBUG_VERBOSE:
+        return
+    _DEBUG_COUNTER += 1
+    if _DEBUG_COUNTER % _DEBUG_EVERY == 0:
         builtins.print(*args, **kwargs)
 
 
