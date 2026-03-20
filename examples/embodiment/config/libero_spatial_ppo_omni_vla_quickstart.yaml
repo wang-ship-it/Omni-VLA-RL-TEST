@@ -114,7 +114,7 @@ rollout:
 actor:
   group_name: "ActorGroup"
   training_backend: "fsdp"
-  micro_batch_size: 64
+  micro_batch_size: 8
   global_batch_size: 1024
   seed: 42
   enable_offload: False
@@ -125,7 +125,7 @@ actor:
     add_value_head: True
     gradient_checkpointing: True
     is_lora: True
-    lora_rank: 32
+    lora_rank: 16
     omni_vla:
       config_name: omni_vla_libero
       detach_critic_input: True
@@ -144,7 +144,7 @@ actor:
 
   fsdp_config:
     strategy: "fsdp"
-    sharding_strategy: "no_shard"
+    sharding_strategy: "full_shard"
     gradient_checkpointing: True
     use_orig_params: True
     mixed_precision:
