@@ -84,7 +84,7 @@ env:
   group_name: "EnvGroup"
 
   train:
-    total_num_envs: 4
+    total_num_envs: 8
     max_episode_steps: 240
     max_steps_per_rollout_epoch: 240
   eval:
@@ -114,7 +114,7 @@ rollout:
 actor:
   group_name: "ActorGroup"
   training_backend: "fsdp"
-  micro_batch_size: 4
+  micro_batch_size: 8
   global_batch_size: 32
   seed: 42
   enable_offload: True
