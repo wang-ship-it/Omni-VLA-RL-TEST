@@ -121,7 +121,6 @@ actor:
 
   model:
     model_path: "/root/data/kaelynwang/Omni_VLA/omni_vla_checkpoint_10000"
-    precision: bf16
     num_action_chunks: 5
     add_value_head: True
     gradient_checkpointing: True
