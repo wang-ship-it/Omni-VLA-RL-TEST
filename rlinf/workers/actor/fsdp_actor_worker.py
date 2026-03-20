@@ -1321,7 +1321,7 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
                 if val.numel() < 50:
                     print(f"[DEBUG TRAIN DATA]   {key} values: {val.flatten()[:50]}")
                 else:
-                    if val.dtype in [torch.bool, torch.uint8]:
+                    if val.dtype in [torch.bool, torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64]:
                         print(f"[DEBUG TRAIN DATA]   {key} stats: min={val.min().item()}, max={val.max().item()}, mean={val.float().mean().item():.6f}, sum={val.sum().item()}")
                     else:
                         print(f"[DEBUG TRAIN DATA]   {key} stats: min={val.min().item():.6f}, max={val.max().item():.6f}, mean={val.mean().item():.6f}")
