@@ -54,6 +54,8 @@ class OmniVLAConfig(OmniConfig):
     num_steps: int = 10  # denoise steps
     # training config
     train_expert_only: bool = False
+    freeze_vggt: bool = False
+    freeze_spatial_expert: bool = False
     safe_get_logprob: bool = False
     joint_logprob: bool = False  # designed for flow-noise
     double_layer: bool = False  # designed for flow-sde without acceleration

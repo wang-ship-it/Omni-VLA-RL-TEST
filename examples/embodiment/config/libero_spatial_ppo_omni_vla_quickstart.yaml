@@ -123,14 +123,14 @@ actor:
     model_path: "/root/data/kaelynwang/Omni_VLA/omni_vla_checkpoint_10000"
     num_action_chunks: 5
     add_value_head: True
-    freeze_vggt: True 
-    freeze_spatial_expert: True
     gradient_checkpointing: True
     is_lora: True
     lora_rank: 32
     omni_vla:
       config_name: omni_vla_libero
       detach_critic_input: True
+      freeze_vggt: True
+      freeze_spatial_expert: True
 
   optim:
     lr: 1e-6

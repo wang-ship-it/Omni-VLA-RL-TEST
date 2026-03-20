@@ -218,7 +218,8 @@ class OmniVLA(nn.Module):
             for p in self.reasoning_spatial_expert.reasoning_expert.vision_tower.parameters():
                 p.requires_grad = False
 
-        if getattr(self.config, "freeze_vggt", False):
+        freeze_vggt = getattr(self.config, "freeze_vggt", False) or getattr(self.config, "freeze_VGGT_model", False)
+        if freeze_vggt:
             self.reasoning_spatial_expert.vggt_encoder.eval()
             for p in self.reasoning_spatial_expert.vggt_encoder.parameters():
                 p.requires_grad = False
