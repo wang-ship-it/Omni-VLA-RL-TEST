@@ -105,7 +105,10 @@ def compute_gae_advantages_and_returns(
         returns[step] = gae if critic_free else gae + values[step]
         
         if step == T-1 or step == 0:
-            print(f"[DEBUG GAE] Step {step}: delta={delta.item():.6f}, gae={gae.item():.6f}, returns[{step}]={returns[step].mean().item():.6f}")
+            delta_str = f"{delta.mean().item():.6f}" if delta.numel() > 1 else f"{delta.item():.6f}"
+            gae_str = f"{gae.mean().item():.6f}" if gae.numel() > 1 else f"{gae.item():.6f}"
+            returns_step_str = f"{returns[step].mean().item():.6f}" if returns[step].numel() > 1 else f"{returns[step].item():.6f}"
+            print(f"[DEBUG GAE] Step {step}: delta={delta_str}, gae={gae_str}, returns[{step}]={returns_step_str}")
 
     advantages = returns - values[:-1] if not critic_free else returns
     
