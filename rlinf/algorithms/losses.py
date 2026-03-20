@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import builtins
+import os
 from typing import Callable, Optional
 
 import torch
@@ -19,6 +21,17 @@ import torch
 from rlinf.algorithms.registry import register_policy_loss
 from rlinf.algorithms.utils import huber_loss
 from rlinf.utils.utils import masked_mean, masked_mean_ratio
+
+
+_DEBUG_VERBOSE = (
+    os.getenv("OMNI_VLA_DEBUG_LOG", "0") == "1"
+    or os.getenv("OMNI_VLA_DEBUG_LOSS", "0") == "1"
+)
+
+
+def print(*args, **kwargs):
+    if _DEBUG_VERBOSE:
+        builtins.print(*args, **kwargs)
 
 
 def _debug_tensor_health(name: str, tensor: Optional[torch.Tensor], topk: int = 5) -> None:

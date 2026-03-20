@@ -12,9 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import builtins
+import os
 from typing import Optional
 
 import torch
+
+
+_DEBUG_VERBOSE = (
+    os.getenv("OMNI_VLA_DEBUG_LOG", "0") == "1"
+    or os.getenv("OMNI_VLA_DEBUG_PREPROCESS", "0") == "1"
+)
+
+
+def print(*args, **kwargs):
+    if _DEBUG_VERBOSE:
+        builtins.print(*args, **kwargs)
 
 
 def huber_loss(error: torch.Tensor, delta: float) -> torch.Tensor:

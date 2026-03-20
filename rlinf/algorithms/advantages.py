@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import builtins
+import os
 from typing import Optional
 
 import torch
@@ -19,6 +21,17 @@ import torch
 from rlinf.algorithms.registry import register_advantage
 from rlinf.algorithms.utils import kl_penalty, safe_normalize
 from rlinf.utils.utils import masked_mean
+
+
+_DEBUG_VERBOSE = (
+    os.getenv("OMNI_VLA_DEBUG_LOG", "0") == "1"
+    or os.getenv("OMNI_VLA_DEBUG_ADV", "0") == "1"
+)
+
+
+def print(*args, **kwargs):
+    if _DEBUG_VERBOSE:
+        builtins.print(*args, **kwargs)
 
 
 @register_advantage("gae")
