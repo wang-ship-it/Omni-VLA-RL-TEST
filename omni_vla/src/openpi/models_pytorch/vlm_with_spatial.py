@@ -327,34 +327,32 @@ class VLMWithSpatialActionExpertModel(
         elif inputs_embeds[0] is None and inputs_embeds[2] is None:
             spatial_dtype = next(self.spatial_expert.parameters()).dtype
             spatial_attention_mask = attention_mask.to(dtype=spatial_dtype) if attention_mask is not None else None
-            middle_output = self.spatial_expert.forward(
+            middle_output = self.spatial_expert.model.forward(
                 inputs_embeds=inputs_embeds[1],
                 attention_mask=spatial_attention_mask,
                 position_ids=position_ids,
                 past_key_values=past_key_values,
                 use_cache=use_cache,
-                output_hidden_states=True,
             )
             past_key_values = middle_output.past_key_values
             prefix_output = None
-            middle_output = middle_output.hidden_states[-1]
+            middle_output = middle_output.last_hidden_state
             suffix_output = None
             
         elif inputs_embeds[0] is None and inputs_embeds[1] is None:
             action_dtype = next(self.action_expert.parameters()).dtype
             action_attention_mask = attention_mask.to(dtype=action_dtype) if attention_mask is not None else None
-            suffix_output = self.action_expert.forward(
+            suffix_output = self.action_expert.model.forward(
                 inputs_embeds=inputs_embeds[2],
                 attention_mask=action_attention_mask,
                 position_ids=position_ids,
                 past_key_values=past_key_values,
                 use_cache=use_cache,
-                output_hidden_states=True,
             )
             past_key_values = None
             prefix_output = None
             middle_output = None
-            suffix_output = suffix_output.hidden_states[-1]
+            suffix_output = suffix_output.last_hidden_state
         else:
             models = [self.reasoning_expert.language_model, self.spatial_expert, self.action_expert]
             num_layers = self.reasoning_expert.config.text_config.num_hidden_layers

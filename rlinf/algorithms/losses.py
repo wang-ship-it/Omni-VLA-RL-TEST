@@ -338,63 +338,47 @@ def compute_ppo_critic_loss(
     _debug_tensor_health("masked_values", masked_values)
     _debug_tensor_health("masked_returns_minus_values", masked_returns - masked_values)
 
-    valid_count = masked_returns.numel()
-    print(f"[DEBUG] explained_variance valid sample count: {valid_count}")
-    if valid_count == 0:
-        explained_variance = torch.tensor(float("nan"), device=returns.device)
-        print(
-            "[DEBUG] explained_variance = NaN because no valid samples are selected by loss_mask"
-        )
-    elif valid_count < 2:
-        print(
-            "[DEBUG] explained_variance warning: valid sample count < 2, "
-            "torch.var(unbiased=True) may become NaN due to zero degrees of freedom."
-        )
+    valid_mask = torch.isfinite(ev_returns) & torch.isfinite(ev_values)
+    ev_returns = ev_returns[valid_mask]
+    ev_values = ev_values[valid_mask]
 
-    if valid_count > 0:
-        # Keep both versions for debugging: unbiased follows torch default, biased is more numerically stable.
-        var_returns_unbiased = torch.var(masked_returns)
-        var_returns = torch.var(masked_returns, unbiased=False)
-        print(
-            f"[DEBUG] var_returns unbiased={var_returns_unbiased.item():.10f}, "
-            f"biased={var_returns.item():.10f}"
-        )
-        print(
-            f"[DEBUG] var_returns is_nan: {torch.isnan(var_returns).item()}, "
-            f"var_returns == 0: {(var_returns == 0).item()}"
-        )
+    if ev_returns.numel() < 2:
+        explained_variance = torch.tensor(0.0, device=returns.device)
+        ev_valid = False
+    else:
+        var_returns = torch.var(ev_returns, unbiased=False)
 
-        if torch.isnan(var_returns) or var_returns == 0:
-            explained_variance = torch.tensor(float("nan"), device=returns.device)
-            print(f"[DEBUG] explained_variance = NaN because var_returns is NaN or 0")
-        else:
-            var_diff_unbiased = torch.var(masked_returns - masked_values)
-            var_diff = torch.var(masked_returns - masked_values, unbiased=False)
-            print(
-                f"[DEBUG] var_diff (returns-values) unbiased={var_diff_unbiased.item():.10f}, "
-                f"biased={var_diff.item():.10f}"
-            )
-            print(f"[DEBUG] var_diff is_nan: {torch.isnan(var_diff).item()}")
+        if torch.isfinite(var_returns) and var_returns > var_eps:
+            var_diff = torch.var(ev_returns - ev_values, unbiased=False)
 
-            if torch.isnan(var_diff):
-                explained_variance = torch.tensor(float("nan"), device=returns.device)
-                print(f"[DEBUG] explained_variance = NaN because var_diff is NaN")
-            else:
+            if torch.isfinite(var_diff):
                 explained_variance = 1 - var_diff / var_returns
-                print(
-                    "[DEBUG] explained_variance = 1 - var_diff/var_returns = "
-                    f"1 - {var_diff.item():.6f}/{var_returns.item():.6f} = "
-                    f"{explained_variance.item():.6f}"
-                )
-    
-    print(f"[DEBUG] Final explained_variance: {explained_variance.item() if not torch.isnan(explained_variance).any() else 'NaN'}")
+                ev_valid = True
+            else:
+                explained_variance = torch.tensor(0.0, device=returns.device)
+                ev_valid = False
+        else:
+            explained_variance = torch.tensor(0.0, device=returns.device)
+            ev_valid = False
+
+    explained_variance_for_log = torch.nan_to_num(
+        explained_variance, nan=0.0, posinf=0.0, neginf=0.0
+    )
+    print(
+        f"[DEBUG] Final explained_variance(raw): {explained_variance.item() if torch.isfinite(explained_variance).item() else 'NaN'}"
+    )
+    print(
+        f"[DEBUG] Final explained_variance(logged): {explained_variance_for_log.item():.6f}, valid={ev_valid}, source={ev_source}"
+    )
     print("[DEBUG PPO CRITIC LOSS] ====== EXITING ======" + "\n" + "="*80)
 
     # Compile metrics for logging
     metrics_data = {
         "critic/value_loss": value_loss.detach().item(),
         "critic/value_clip_ratio": value_clip_ratio.detach().item(),
-        "critic/explained_variance": explained_variance.detach().item() if not torch.isnan(explained_variance).any() else float('nan'),
+        "critic/explained_variance": explained_variance_for_log.detach().item(),
+        "critic/explained_variance_valid": float(ev_valid),
+        "critic/explained_variance_source_masked": 1.0 if ev_source == "masked" else 0.0,
     }
     return value_loss, metrics_data
 
