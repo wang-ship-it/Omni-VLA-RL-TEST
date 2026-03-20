@@ -151,3 +151,7 @@ cython_debug/
 # Project specific
 data/*.hdf5
 data/tokenizer.model
+
+# Local rollout / eval videos (do not commit)
+videos_0_20/
+videos_0_20.tar.gz
