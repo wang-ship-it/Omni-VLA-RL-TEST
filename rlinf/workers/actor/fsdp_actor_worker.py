@@ -1158,6 +1158,13 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
                 "dones"
             ]  # [n_chunk_step, rollout_epoch x bsz, num_action_chunks]
             loss_mask, loss_mask_sum = compute_loss_mask(dones)
+            response_mask = rollout_batch.get("response_mask", None)
+            if (
+                response_mask is not None
+                and isinstance(response_mask, torch.Tensor)
+                and response_mask.shape == loss_mask.shape
+            ):
+                loss_mask = loss_mask & response_mask.bool()
 
             if self.cfg.algorithm.reward_type == "chunk_level":
                 loss_mask = loss_mask.any(dim=-1, keepdim=True)
@@ -1207,13 +1214,8 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
                 reward_filter_mask.unsqueeze(0).expand(n_chunk_step, -1).unsqueeze(-1)
             )  # [n_chunk_step, batch, 1]
 
-            # update loss_mask
-            if rollout_batch.get("loss_mask", None) is not None:
-                rollout_batch["loss_mask"] = (
-                    reward_filter_mask & rollout_batch["loss_mask"]
-                )
-            else:
-                rollout_batch["loss_mask"] = reward_filter_mask
+            rollout_batch["reward_filter_mask"] = reward_filter_mask
+            rollout_batch["rewards"] = rollout_batch["rewards"] * reward_filter_mask
 
         return rollout_batch
 
