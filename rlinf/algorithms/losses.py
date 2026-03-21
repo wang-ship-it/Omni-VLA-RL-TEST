@@ -29,12 +29,19 @@ _DEBUG_VERBOSE = (
 )
 _DEBUG_EVERY = max(1, int(os.getenv("OMNI_VLA_DEBUG_EVERY", "1")))
 _DEBUG_COUNTER = 0
+_DEBUG_INCLUDE = [
+    s.strip() for s in os.getenv("OMNI_VLA_DEBUG_INCLUDE", "").split(",") if s.strip()
+]
 
 
 def print(*args, **kwargs):
     global _DEBUG_COUNTER
     if not _DEBUG_VERBOSE:
         return
+    if _DEBUG_INCLUDE:
+        msg = " ".join(str(a) for a in args)
+        if not any(k in msg for k in _DEBUG_INCLUDE):
+            return
     _DEBUG_COUNTER += 1
     if _DEBUG_COUNTER % _DEBUG_EVERY == 0:
         builtins.print(*args, **kwargs)

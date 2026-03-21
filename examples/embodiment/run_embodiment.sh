@@ -13,6 +13,7 @@ export OMNI_VLA_DEBUG_ADV=${OMNI_VLA_DEBUG_ADV:-$OMNI_VLA_DEBUG_LOG}
 export OMNI_VLA_DEBUG_PREPROCESS=${OMNI_VLA_DEBUG_PREPROCESS:-$OMNI_VLA_DEBUG_LOG}
 export OMNI_VLA_DEBUG_ACTOR=${OMNI_VLA_DEBUG_ACTOR:-$OMNI_VLA_DEBUG_LOG}
 export OMNI_VLA_DEBUG_ENV=${OMNI_VLA_DEBUG_ENV:-$OMNI_VLA_DEBUG_LOG}
+export OMNI_VLA_DEBUG_INCLUDE=${OMNI_VLA_DEBUG_INCLUDE:-""}
 
 export ROBOTWIN_PATH=${ROBOTWIN_PATH:-"/path/to/RoboTwin"}
 export PYTHONPATH=${REPO_PATH}:${ROBOTWIN_PATH}:$PYTHONPATH
@@ -37,6 +38,7 @@ fi
 
 # NOTE: Set the active robot platform (required for correct action dimension and normalization), supported platforms are LIBERO, ALOHA, BRIDGE, default is LIBERO
 ROBOT_PLATFORM=${2:-${ROBOT_PLATFORM:-"LIBERO"}}
+EXTRA_ARGS=("${@:3}")
 
 export ROBOT_PLATFORM
 echo "Using ROBOT_PLATFORM=$ROBOT_PLATFORM"
@@ -45,6 +47,6 @@ echo "Using Python at $(which python)"
 LOG_DIR="${REPO_PATH}/logs/$(date +'%Y%m%d-%H:%M:%S')-${CONFIG_NAME}" #/$(date +'%Y%m%d-%H:%M:%S')"
 MEGA_LOG_FILE="${LOG_DIR}/run_embodiment.log"
 mkdir -p "${LOG_DIR}"
-CMD="python ${SRC_FILE} --config-path ${EMBODIED_PATH}/config/ --config-name ${CONFIG_NAME} runner.logger.log_path=${LOG_DIR}"
-echo ${CMD} > ${MEGA_LOG_FILE}
-${CMD} 2>&1 | tee -a ${MEGA_LOG_FILE}
+CMD=(python "${SRC_FILE}" --config-path "${EMBODIED_PATH}/config/" --config-name "${CONFIG_NAME}" "runner.logger.log_path=${LOG_DIR}" "${EXTRA_ARGS[@]}")
+echo "${CMD[@]}" > "${MEGA_LOG_FILE}"
+"${CMD[@]}" 2>&1 | tee -a "${MEGA_LOG_FILE}"
