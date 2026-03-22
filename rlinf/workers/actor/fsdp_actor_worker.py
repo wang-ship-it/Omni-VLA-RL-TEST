@@ -1647,28 +1647,50 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
         self.lr_scheduler.step()
         self.optimizer.zero_grad()
         clear_memory()
-        # Separate explained_variance sufficient statistics from regular metrics
         ev_keys = ("_ev_sum_returns", "_ev_sum_returns_sq", "_ev_sum_diff", "_ev_sum_diff_sq", "_ev_count")
         ev_stats = {k: sum(metrics.pop(k)) for k in ev_keys if k in metrics}
 
         mean_metric_dict = {key: np.mean(value) for key, value in metrics.items()}
+        mean_metric_dict = all_reduce_dict(
+            mean_metric_dict, op=torch.distributed.ReduceOp.AVG
+        )
 
-        # Compute explained_variance from globally aggregated sufficient statistics
-        total_count = ev_stats.get("_ev_count", 0.0)
+        ev_tensor = torch.tensor(
+            [
+                ev_stats.get("_ev_sum_returns", 0.0),
+                ev_stats.get("_ev_sum_returns_sq", 0.0),
+                ev_stats.get("_ev_sum_diff", 0.0),
+                ev_stats.get("_ev_sum_diff_sq", 0.0),
+                ev_stats.get("_ev_count", 0.0),
+            ],
+            device=torch.cuda.current_device(),
+            dtype=torch.float64,
+        )
+        torch.distributed.all_reduce(ev_tensor, op=torch.distributed.ReduceOp.SUM)
+        total_count = ev_tensor[4].item()
+        ev_valid = 0.0
+        var_r = 0.0
+        var_d = 0.0
         if total_count >= 2:
-            mean_r = ev_stats["_ev_sum_returns"] / total_count
-            var_r = ev_stats["_ev_sum_returns_sq"] / total_count - mean_r ** 2
-            mean_d = ev_stats["_ev_sum_diff"] / total_count
-            var_d = ev_stats["_ev_sum_diff_sq"] / total_count - mean_d ** 2
+            mean_r = ev_tensor[0].item() / total_count
+            var_r = ev_tensor[1].item() / total_count - mean_r ** 2
+            mean_d = ev_tensor[2].item() / total_count
+            var_d = ev_tensor[3].item() / total_count - mean_d ** 2
             if var_r > 1e-8:
                 mean_metric_dict["critic/explained_variance"] = 1.0 - var_d / var_r
+                ev_valid = 1.0
             else:
                 mean_metric_dict["critic/explained_variance"] = 0.0
         else:
             mean_metric_dict["critic/explained_variance"] = 0.0
-
-        mean_metric_dict = all_reduce_dict(
-            mean_metric_dict, op=torch.distributed.ReduceOp.AVG
+        mean_metric_dict["critic/explained_variance_valid"] = ev_valid
+        print(
+            "[DEBUG EV AGG] "
+            f"_ev_count={total_count:.0f} "
+            f"_ev_var_returns={var_r:.8f} "
+            f"_ev_var_diff={var_d:.8f} "
+            f"critic/explained_variance={mean_metric_dict['critic/explained_variance']:.6f} "
+            f"critic/explained_variance_valid={ev_valid:.0f}"
         )
 
         return mean_metric_dict
