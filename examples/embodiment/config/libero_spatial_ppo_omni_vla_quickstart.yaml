@@ -57,7 +57,7 @@ algorithm:
   clip_ratio_high: 0.2
   clip_ratio_low: 0.2
   clip_ratio_c: 3.0
-  value_clip: 0.2
+  value_clip: 0.5
   huber_delta: 10.0
 
   gamma: 0.99
@@ -138,7 +138,7 @@ actor:
     adam_eps: 1.0e-08
     weight_decay: 0.01
     clip_grad: 1.0
-    critic_warmup_steps: 0
+    critic_warmup_steps: 30
 
   fsdp_config:
     strategy: "fsdp"

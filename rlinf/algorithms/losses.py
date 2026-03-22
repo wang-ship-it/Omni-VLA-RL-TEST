@@ -312,82 +312,32 @@ def compute_ppo_critic_loss(
     value_clip_ratio = value_clip_indicator.float().mean()
     print(f"[DEBUG] value_clip_ratio: {value_clip_ratio.item():.6f}")
 
-    # explained variance
-    print("\n[DEBUG] ====== Computing explained_variance ======")
+    # Collect sufficient statistics for explained_variance so the caller can
+    # aggregate across all micro-batches before computing the final metric.
+    # Per-micro-batch computation is unreliable when loss_mask leaves only 2-8
+    # valid samples (variance estimates become noise).
     if loss_mask is not None:
-        masked_returns = returns[loss_mask]
-        masked_values = values[loss_mask]
-        print(f"[DEBUG] loss_mask true count: {loss_mask.sum().item()}")
+        masked_returns = returns[loss_mask].detach().float()
+        masked_values = values[loss_mask].detach().float()
     else:
-        masked_returns = returns
-        masked_values = values
-        print(f"[DEBUG] No loss_mask, using all data")
-    
-    print(f"[DEBUG] masked_returns.shape: {masked_returns.shape}")
-    if masked_returns.numel() > 0:
-        print(
-            f"[DEBUG] masked_returns stats: min={masked_returns.min().item():.6f}, "
-            f"max={masked_returns.max().item():.6f}, mean={masked_returns.mean().item():.6f}"
-        )
-    else:
-        print("[DEBUG] masked_returns is empty after loss_mask")
-    print(f"[DEBUG] masked_values.shape: {masked_values.shape}")
-    if masked_values.numel() > 0:
-        print(
-            f"[DEBUG] masked_values stats: min={masked_values.min().item():.6f}, "
-            f"max={masked_values.max().item():.6f}, mean={masked_values.mean().item():.6f}"
-        )
-    else:
-        print("[DEBUG] masked_values is empty after loss_mask")
+        masked_returns = returns.detach().float()
+        masked_values = values.detach().float()
 
-    # Explicitly log NaN/Inf source to locate why explained_variance turns NaN.
-    _debug_tensor_health("masked_returns", masked_returns)
-    _debug_tensor_health("masked_values", masked_values)
-    _debug_tensor_health("masked_returns_minus_values", masked_returns - masked_values)
+    valid_mask = torch.isfinite(masked_returns) & torch.isfinite(masked_values)
+    ev_returns = masked_returns[valid_mask]
+    ev_values = masked_values[valid_mask]
+    ev_diff = ev_returns - ev_values
+    ev_count = ev_returns.numel()
 
-    ev_returns = masked_returns
-    ev_values = masked_values
-    valid_mask = torch.isfinite(ev_returns) & torch.isfinite(ev_values)
-    ev_returns = ev_returns[valid_mask]
-    ev_values = ev_values[valid_mask]
-
-    var_eps = 1e-8
-    if ev_returns.numel() < 2:
-        explained_variance = torch.tensor(0.0, device=returns.device)
-        ev_valid = False
-    else:
-        var_returns = torch.var(ev_returns, unbiased=False)
-
-        if torch.isfinite(var_returns) and var_returns > var_eps:
-            var_diff = torch.var(ev_returns - ev_values, unbiased=False)
-
-            if torch.isfinite(var_diff):
-                explained_variance = 1 - var_diff / var_returns
-                ev_valid = True
-            else:
-                explained_variance = torch.tensor(0.0, device=returns.device)
-                ev_valid = False
-        else:
-            explained_variance = torch.tensor(0.0, device=returns.device)
-            ev_valid = False
-
-    explained_variance_for_log = torch.nan_to_num(
-        explained_variance, nan=0.0, posinf=0.0, neginf=0.0
-    )
-    print(
-        f"[DEBUG] Final explained_variance(raw): {explained_variance.item() if torch.isfinite(explained_variance).item() else 'NaN'}"
-    )
-    print(
-        f"[DEBUG] Final explained_variance(logged): {explained_variance_for_log.item():.6f}, valid={ev_valid}"
-    )
-    print("[DEBUG PPO CRITIC LOSS] ====== EXITING ======" + "\n" + "="*80)
-
-    # Compile metrics for logging
     metrics_data = {
         "critic/value_loss": value_loss.detach().item(),
         "critic/value_clip_ratio": value_clip_ratio.detach().item(),
-        "critic/explained_variance": explained_variance_for_log.detach().item(),
-        "critic/explained_variance_valid": float(ev_valid),
+        # Sufficient statistics for global explained_variance computation
+        "_ev_sum_returns": ev_returns.sum().item() if ev_count > 0 else 0.0,
+        "_ev_sum_returns_sq": (ev_returns ** 2).sum().item() if ev_count > 0 else 0.0,
+        "_ev_sum_diff": ev_diff.sum().item() if ev_count > 0 else 0.0,
+        "_ev_sum_diff_sq": (ev_diff ** 2).sum().item() if ev_count > 0 else 0.0,
+        "_ev_count": float(ev_count),
     }
     return value_loss, metrics_data
 
