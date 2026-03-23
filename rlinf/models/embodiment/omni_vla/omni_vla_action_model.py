@@ -451,13 +451,25 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
         prefix_embs_unscaled = prefix_embs / normalizer
 
         # reasoning_spatial_expert.forward returns ([prefix_out, middle_out, suffix_out], past_key_values)
-        _, past_key_values = self.reasoning_spatial_expert.forward(
-            attention_mask=prefix_att_2d_masks_4d,
-            position_ids=prefix_position_ids,
-            past_key_values=None,
-            inputs_embeds=[prefix_embs_unscaled, None, None],
-            use_cache=True,
-        )
+        prefix_middle_no_grad = self.training and self.config.train_expert_only
+
+        if prefix_middle_no_grad:
+            with torch.no_grad():
+                _, past_key_values = self.reasoning_spatial_expert.forward(
+                    attention_mask=prefix_att_2d_masks_4d,
+                    position_ids=prefix_position_ids,
+                    past_key_values=None,
+                    inputs_embeds=[prefix_embs_unscaled, None, None],
+                    use_cache=True,
+                )
+        else:
+            _, past_key_values = self.reasoning_spatial_expert.forward(
+                attention_mask=prefix_att_2d_masks_4d,
+                position_ids=prefix_position_ids,
+                past_key_values=None,
+                inputs_embeds=[prefix_embs_unscaled, None, None],
+                use_cache=True,
+            )
 
         # 2. Process middle (spatial features)
         middle_embs, middle_pad_masks, middle_att_masks = self.embed_spatial(
@@ -483,13 +495,26 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
         middle_embs_unscaled = middle_embs / normalizer_m
 
         # Process middle, reuse prefix's KV cache
-        (_, _, _), past_key_values = self.reasoning_spatial_expert.forward(
-            attention_mask=full_att_2d_masks_4d,
-            position_ids=middle_position_ids_2d,
-            past_key_values=past_key_values,
-            inputs_embeds=[None, middle_embs_unscaled, None],
-            use_cache=True,
-        )
+        if prefix_middle_no_grad:
+            with torch.no_grad():
+                (_, _, _), past_key_values = self.reasoning_spatial_expert.forward(
+                    attention_mask=full_att_2d_masks_4d,
+                    position_ids=middle_position_ids_2d,
+                    past_key_values=past_key_values,
+                    inputs_embeds=[None, middle_embs_unscaled, None],
+                    use_cache=True,
+                )
+            if past_key_values is not None:
+                past_key_values.key_cache = [k.detach() for k in past_key_values.key_cache]
+                past_key_values.value_cache = [v.detach() for v in past_key_values.value_cache]
+        else:
+            (_, _, _), past_key_values = self.reasoning_spatial_expert.forward(
+                attention_mask=full_att_2d_masks_4d,
+                position_ids=middle_position_ids_2d,
+                past_key_values=past_key_values,
+                inputs_embeds=[None, middle_embs_unscaled, None],
+                use_cache=True,
+            )
 
         x_t = noise
         # add sde sample and traj collect
@@ -630,16 +655,8 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
         
         if past_key_values is not None:
             cached_seq_len = past_key_values.get_seq_length()
-            # Copy KV cache to avoid modification
-            from transformers.cache_utils import DynamicCache
-            past_key_values_copy = DynamicCache()
-            past_key_values_copy.key_cache = list(past_key_values.key_cache)
-            past_key_values_copy.value_cache = list(past_key_values.value_cache)
-            if hasattr(past_key_values, '_seen_tokens'):
-                past_key_values_copy._seen_tokens = past_key_values._seen_tokens
         else:
             cached_seq_len = 0
-            past_key_values_copy = None
 
         if cached_seq_len > 0:
             # We need full prefix mask (prefix + middle). 
@@ -666,7 +683,7 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
         outputs_embeds, _ = self.reasoning_spatial_expert.forward(
             attention_mask=full_att_2d_masks_4d,
             position_ids=position_ids,
-            past_key_values=past_key_values_copy,
+            past_key_values=past_key_values,
             inputs_embeds=[None, None, suffix_embs_unscaled],
             use_cache=False,
         )
@@ -741,10 +758,18 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
         compute_values=False,
     ):
         bsize = state.shape[0]
+        prefix_middle_no_grad = self.training
+
         # 1. Prefix
-        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
-            images, img_masks, lang_tokens, lang_masks
-        )
+        if prefix_middle_no_grad:
+            with torch.no_grad():
+                prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
+                    images, img_masks, lang_tokens, lang_masks
+                )
+        else:
+            prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
+                images, img_masks, lang_tokens, lang_masks
+            )
         prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
         prefix_position_ids = self.get_position_ids(prefix_pad_masks)
         prefix_att_2d_masks_4d = self._prepare_attention_masks_4d(prefix_att_2d_masks)
@@ -756,18 +781,34 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
         normalizer = torch.tensor(prefix_embs.shape[-1]**0.5, dtype=prefix_embs.dtype, device=prefix_embs.device)
         prefix_embs_unscaled = prefix_embs / normalizer
 
-        _, past_key_values = self.reasoning_spatial_expert.forward(
-            attention_mask=prefix_att_2d_masks_4d,
-            position_ids=prefix_position_ids,
-            past_key_values=None,
-            inputs_embeds=[prefix_embs_unscaled, None, None],
-            use_cache=True,
-        )
+        if prefix_middle_no_grad:
+            with torch.no_grad():
+                _, past_key_values = self.reasoning_spatial_expert.forward(
+                    attention_mask=prefix_att_2d_masks_4d,
+                    position_ids=prefix_position_ids,
+                    past_key_values=None,
+                    inputs_embeds=[prefix_embs_unscaled, None, None],
+                    use_cache=True,
+                )
+        else:
+            _, past_key_values = self.reasoning_spatial_expert.forward(
+                attention_mask=prefix_att_2d_masks_4d,
+                position_ids=prefix_position_ids,
+                past_key_values=None,
+                inputs_embeds=[prefix_embs_unscaled, None, None],
+                use_cache=True,
+            )
 
         # 2. Middle
-        middle_embs, middle_pad_masks, middle_att_masks = self.embed_spatial(
-            images, img_masks
-        )
+        if prefix_middle_no_grad:
+            with torch.no_grad():
+                middle_embs, middle_pad_masks, middle_att_masks = self.embed_spatial(
+                    images, img_masks
+                )
+        else:
+            middle_embs, middle_pad_masks, middle_att_masks = self.embed_spatial(
+                images, img_masks
+            )
         middle_len = middle_pad_masks.shape[1]
         device = state.device
         
@@ -785,13 +826,26 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
         normalizer_m = torch.tensor(middle_embs.shape[-1]**0.5, dtype=middle_embs.dtype, device=middle_embs.device)
         middle_embs_unscaled = middle_embs / normalizer_m
 
-        (_, _, _), past_key_values = self.reasoning_spatial_expert.forward(
-            attention_mask=full_att_2d_masks_4d,
-            position_ids=middle_position_ids_2d,
-            past_key_values=past_key_values,
-            inputs_embeds=[None, middle_embs_unscaled, None],
-            use_cache=True,
-        )
+        if prefix_middle_no_grad:
+            with torch.no_grad():
+                (_, _, _), past_key_values = self.reasoning_spatial_expert.forward(
+                    attention_mask=full_att_2d_masks_4d,
+                    position_ids=middle_position_ids_2d,
+                    past_key_values=past_key_values,
+                    inputs_embeds=[None, middle_embs_unscaled, None],
+                    use_cache=True,
+                )
+            if past_key_values is not None:
+                past_key_values.key_cache = [k.detach() for k in past_key_values.key_cache]
+                past_key_values.value_cache = [v.detach() for v in past_key_values.value_cache]
+        else:
+            (_, _, _), past_key_values = self.reasoning_spatial_expert.forward(
+                attention_mask=full_att_2d_masks_4d,
+                position_ids=middle_position_ids_2d,
+                past_key_values=past_key_values,
+                inputs_embeds=[None, middle_embs_unscaled, None],
+                use_cache=True,
+            )
 
         chains_log_probs = []
         chains_values = []

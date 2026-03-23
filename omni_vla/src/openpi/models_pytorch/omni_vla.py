@@ -273,6 +273,12 @@ class OmniVLA(nn.Module):
         self.reasoning_spatial_expert.reasoning_expert.vision_tower.gradient_checkpointing = True
         self.reasoning_spatial_expert.spatial_expert.model.gradient_checkpointing = True
         self.reasoning_spatial_expert.action_expert.model.gradient_checkpointing = True
+        if hasattr(self.reasoning_spatial_expert.reasoning_expert.language_model, "config"):
+            self.reasoning_spatial_expert.reasoning_expert.language_model.config.use_cache = False
+        if hasattr(self.reasoning_spatial_expert.spatial_expert.model, "config"):
+            self.reasoning_spatial_expert.spatial_expert.model.config.use_cache = False
+        if hasattr(self.reasoning_spatial_expert.action_expert.model, "config"):
+            self.reasoning_spatial_expert.action_expert.model.config.use_cache = False
         logging.info("Enabled gradient checkpointing for QwenA1 model")
 
     def gradient_checkpointing_disable(self):
@@ -282,6 +288,12 @@ class OmniVLA(nn.Module):
         self.reasoning_spatial_expert.reasoning_expert.vision_tower.gradient_checkpointing = False
         self.reasoning_spatial_expert.spatial_expert.model.gradient_checkpointing = False
         self.reasoning_spatial_expert.action_expert.model.gradient_checkpointing = False
+        if hasattr(self.reasoning_spatial_expert.reasoning_expert.language_model, "config"):
+            self.reasoning_spatial_expert.reasoning_expert.language_model.config.use_cache = True
+        if hasattr(self.reasoning_spatial_expert.spatial_expert.model, "config"):
+            self.reasoning_spatial_expert.spatial_expert.model.config.use_cache = True
+        if hasattr(self.reasoning_spatial_expert.action_expert.model, "config"):
+            self.reasoning_spatial_expert.action_expert.model.config.use_cache = True
         logging.info("Disabled gradient checkpointing for QwenA1 model")
 
     def _apply_checkpoint(self, func, *args, **kwargs):
