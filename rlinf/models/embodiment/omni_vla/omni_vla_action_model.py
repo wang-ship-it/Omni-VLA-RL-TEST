@@ -655,8 +655,18 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
         
         if past_key_values is not None:
             cached_seq_len = past_key_values.get_seq_length()
+            if self.training:
+                past_key_values_for_suffix = past_key_values
+            else:
+                from transformers.cache_utils import DynamicCache
+                past_key_values_for_suffix = DynamicCache()
+                past_key_values_for_suffix.key_cache = list(past_key_values.key_cache)
+                past_key_values_for_suffix.value_cache = list(past_key_values.value_cache)
+                if hasattr(past_key_values, "_seen_tokens"):
+                    past_key_values_for_suffix._seen_tokens = past_key_values._seen_tokens
         else:
             cached_seq_len = 0
+            past_key_values_for_suffix = None
 
         if cached_seq_len > 0:
             # We need full prefix mask (prefix + middle). 
@@ -683,7 +693,7 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
         outputs_embeds, _ = self.reasoning_spatial_expert.forward(
             attention_mask=full_att_2d_masks_4d,
             position_ids=position_ids,
-            past_key_values=past_key_values,
+            past_key_values=past_key_values_for_suffix,
             inputs_embeds=[None, None, suffix_embs_unscaled],
             use_cache=False,
         )
