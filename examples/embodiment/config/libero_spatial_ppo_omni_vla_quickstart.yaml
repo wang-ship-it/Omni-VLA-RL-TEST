@@ -41,7 +41,7 @@ algorithm:
   group_size: 1
   reward_coef: 10.0
 
-  rollout_epoch: 16
+  rollout_epoch: 4
   eval_rollout_epoch: 1
 
   reward_type: chunk_level
