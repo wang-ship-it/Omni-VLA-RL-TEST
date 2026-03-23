@@ -22,7 +22,7 @@ runner:
   logger:
     log_path: "../results"
     project_name: rlinf
-    experiment_name: "libero_spatial_ppo_omni_vla"
+    experiment_name: "libero_spatial_ppo_omni_vla_${now:%Y%m%d-%H%M%S}"
     logger_backends: ["wandb"]
 
   max_epochs: 1000
@@ -41,14 +41,14 @@ algorithm:
   group_size: 1
   reward_coef: 10.0
 
-  rollout_epoch: 4
+  rollout_epoch: 16
   eval_rollout_epoch: 1
 
   reward_type: chunk_level
   logprob_type: chunk_level
   entropy_type: token_level
 
-  update_epoch: 2
+  update_epoch: 4
   adv_type: gae
   loss_type: actor_critic
   loss_agg_func: "token-mean"
@@ -84,7 +84,7 @@ env:
   group_name: "EnvGroup"
 
   train:
-    total_num_envs: 8
+    total_num_envs: 32
     max_episode_steps: 240
     max_steps_per_rollout_epoch: 240
   eval:
@@ -114,8 +114,8 @@ rollout:
 actor:
   group_name: "ActorGroup"
   training_backend: "fsdp"
-  micro_batch_size: 8
-  global_batch_size: 128
+  micro_batch_size: 64
+  global_batch_size: 2048
   seed: 42
   enable_offload: True
 
