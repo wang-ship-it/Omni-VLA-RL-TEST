@@ -88,7 +88,7 @@ env:
     max_episode_steps: 240
     max_steps_per_rollout_epoch: 240
   eval:
-    total_num_envs: 1
+    total_num_envs: 2
     auto_reset: True
     ignore_terminations: True
     max_episode_steps: 240
