@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import builtins
-import os
 from typing import Callable, Optional
 
 import torch
@@ -23,55 +21,147 @@ from rlinf.algorithms.utils import huber_loss
 from rlinf.utils.utils import masked_mean, masked_mean_ratio
 
 
-_DEBUG_VERBOSE = (
-    os.getenv("OMNI_VLA_DEBUG_LOG", "0") == "1"
-    or os.getenv("OMNI_VLA_DEBUG_LOSS", "0") == "1"
-)
-_DEBUG_EVERY = max(1, int(os.getenv("OMNI_VLA_DEBUG_EVERY", "1")))
-_DEBUG_COUNTER = 0
-_DEBUG_INCLUDE = [
-    s.strip() for s in os.getenv("OMNI_VLA_DEBUG_INCLUDE", "").split(",") if s.strip()
-]
-
-
-def print(*args, **kwargs):
-    global _DEBUG_COUNTER
-    if not _DEBUG_VERBOSE:
-        return
-    if _DEBUG_INCLUDE:
-        msg = " ".join(str(a) for a in args)
-        if not any(k in msg for k in _DEBUG_INCLUDE):
-            return
-    _DEBUG_COUNTER += 1
-    if _DEBUG_COUNTER % _DEBUG_EVERY == 0:
-        builtins.print(*args, **kwargs)
-
-
-def _debug_tensor_health(name: str, tensor: Optional[torch.Tensor], topk: int = 5) -> None:
-    """Print concise NaN/Inf diagnostics for a tensor."""
-    if tensor is None:
-        print(f"[DEBUG NAN CHECK] {name}: None")
-        return
-
-    t = tensor.detach()
-    nan_mask = torch.isnan(t)
-    inf_mask = torch.isinf(t)
-    nan_count = nan_mask.sum().item()
-    inf_count = inf_mask.sum().item()
-    total_count = t.numel()
-    print(
-        f"[DEBUG NAN CHECK] {name}: shape={tuple(t.shape)}, total={total_count}, "
-        f"nan_count={nan_count}, inf_count={inf_count}"
+def compute_decoupled_ppo_actor_loss(
+    logprobs: torch.Tensor,
+    old_logprobs: torch.Tensor,
+    clip_ratio_low: float,
+    clip_ratio_high: float,
+    advantages: torch.Tensor,
+    proximal_logprobs: Optional[torch.Tensor] = None,
+    versions: Optional[torch.Tensor] = None,
+    current_version: Optional[float] = None,
+    loss_mask: Optional[torch.Tensor] = None,
+    clip_ratio_c: Optional[float] = None,
+    loss_agg_func: Optional[Callable[..., torch.Tensor]] = masked_mean,
+    max_episode_steps: Optional[int] = None,
+    loss_mask_sum: Optional[torch.Tensor] = None,
+    critic_warmup: Optional[bool] = False,
+    behave_weight_threshold: Optional[float] = None,
+    **kwargs,
+) -> tuple[torch.Tensor, dict]:
+    """Compute actor loss for decoupled PPO with optional proximal policy anchor."""
+    assert logprobs.dtype == torch.float32, (
+        "logprobs must be float32 to keep numerical stability"
+    )
+    assert old_logprobs.dtype == torch.float32, (
+        "old_logprobs must be float32 to keep numerical stability"
+    )
+    assert advantages.dtype == torch.float32, (
+        "advantages must be float32 to keep numerical stability"
     )
 
-    bad_mask = nan_mask | inf_mask
-    if bad_mask.any():
-        bad_indices = torch.nonzero(bad_mask, as_tuple=False)
-        show_count = min(topk, bad_indices.shape[0])
-        print(f"[DEBUG NAN CHECK] {name}: first {show_count} bad entries:")
-        for i in range(show_count):
-            idx = tuple(bad_indices[i].tolist())
-            print(f"[DEBUG NAN CHECK]   {name}{idx} = {t[idx]}")
+    if loss_mask is None:
+        loss_mask = torch.ones_like(logprobs).bool()
+
+    loss_mask_ratio = None
+    if (
+        max_episode_steps is not None
+        and loss_mask_sum is not None
+        and loss_mask is not None
+    ):
+        loss_mask_ratio = (loss_mask_sum * 1.0) / max_episode_steps
+        loss_agg_func = masked_mean_ratio
+
+    if proximal_logprobs is None:
+        if versions is None or current_version is None:
+            proximal_logprobs = old_logprobs.detach()
+        else:
+            v_behav = versions.float()
+            v_theta = float(current_version)
+            v_prox = v_theta - 1.0
+
+            version_diff = v_theta - v_behav
+            version_gap = v_prox - v_behav
+            generated_tokens_mask = versions >= 0
+            alpha = torch.where(
+                (version_diff > 0) & generated_tokens_mask,
+                version_gap / version_diff,
+                torch.zeros_like(v_behav),
+            )
+            while alpha.dim() < logprobs.dim():
+                alpha = alpha.unsqueeze(-1)
+            alpha = torch.clamp(alpha, 0.0, 1.0)
+            proximal_logprobs = (
+                old_logprobs + alpha * (logprobs - old_logprobs)
+            ).detach()
+
+    assert proximal_logprobs.dtype == torch.float32, (
+        "proximal_logprobs must be float32 to keep numerical stability"
+    )
+
+    loss_mask_count = loss_mask.count_nonzero() or 1
+    proximal_ratio = torch.where(
+        loss_mask, torch.exp(logprobs - proximal_logprobs), 0.0
+    )
+    clipped_proximal_ratio = torch.clamp(
+        proximal_ratio, 1.0 - clip_ratio_low, 1.0 + clip_ratio_high
+    )
+
+    pg_loss1 = -advantages * proximal_ratio
+    pg_loss2 = -advantages * clipped_proximal_ratio
+    pg_loss = torch.max(pg_loss1, pg_loss2)
+
+    if clip_ratio_c is not None:
+        assert clip_ratio_c > 1.0, clip_ratio_c
+        pg_loss3 = torch.sign(advantages) * clip_ratio_c * advantages
+        dual_clip_mask = pg_loss3.detach() < pg_loss.detach()
+        pg_loss = torch.min(pg_loss, pg_loss3)
+    else:
+        dual_clip_mask = torch.zeros_like(pg_loss, dtype=torch.bool)
+
+    behav_weight = torch.exp(proximal_logprobs - old_logprobs)
+    behav_mask = (
+        (behav_weight <= behave_weight_threshold).logical_and(loss_mask)
+        if behave_weight_threshold is not None
+        else loss_mask
+    )
+    behav_mask_count = behav_mask.count_nonzero() or 1
+
+    pg_loss = loss_agg_func(pg_loss * behav_weight, behav_mask, loss_mask_ratio)
+    if critic_warmup:
+        pg_loss = torch.tensor(0.0, device=pg_loss.device)
+
+    with torch.no_grad():
+        clip_fraction = (pg_loss1 < pg_loss2).logical_and(
+            loss_mask
+        ).count_nonzero() / loss_mask_count
+        dual_clip_fraction = (
+            dual_clip_mask.logical_and(loss_mask).count_nonzero() / loss_mask_count
+        )
+        proximal_approx_kl = (
+            -torch.where(loss_mask, logprobs - proximal_logprobs, 0.0).sum()
+            / loss_mask_count
+        )
+        behav_approx_kl = (
+            -torch.where(behav_mask, proximal_logprobs - old_logprobs, 0.0).sum()
+            / behav_mask_count
+        )
+        behav_clip_fraction = 1.0 - (behav_mask_count / loss_mask_count)
+
+    metrics_data = {
+        "actor/policy_loss": pg_loss.detach(),
+        "actor/proximal_ratio": masked_mean(proximal_ratio.detach(), loss_mask),
+        "actor/clipped_proximal_ratio": masked_mean(
+            clipped_proximal_ratio.detach(), loss_mask
+        ),
+        "actor/clip_fraction": clip_fraction,
+        "actor/dual_clip_fraction": dual_clip_fraction,
+        "actor/behav_clip_fraction": behav_clip_fraction,
+        "actor/proximal_approx_kl": proximal_approx_kl,
+        "actor/behav_approx_kl": behav_approx_kl,
+    }
+    if (
+        versions is not None
+        and current_version is not None
+        and versions.shape == loss_mask.shape
+        and loss_mask.any()
+    ):
+        metrics_data["actor/average_version"] = versions[loss_mask].float().mean()
+        metrics_data["actor/current_version"] = torch.tensor(
+            float(current_version), device=logprobs.device
+        )
+
+    return pg_loss, metrics_data
 
 
 def compute_ppo_actor_loss(
@@ -88,6 +178,7 @@ def compute_ppo_actor_loss(
     critic_warmup: Optional[bool] = False,
     clip_log_ratio_min: Optional[float] = None,
     clip_log_ratio_max: Optional[float] = None,
+    fast_path_zero_loss_mask: Optional[bool] = False,
     **kwargs,
 ) -> tuple[torch.Tensor, dict]:
     """
@@ -107,23 +198,20 @@ def compute_ppo_actor_loss(
     Returns:
         Tuple[torch.Tensor, Dict]: (actor_loss, metrics_dict)
     """
-    print("\n" + "="*80)
-    print("[DEBUG PPO ACTOR] ====== ENTERING compute_ppo_actor_loss ======")
-    print(f"[DEBUG PPO ACTOR] logprobs.shape: {logprobs.shape}")
-    print(f"[DEBUG PPO ACTOR] logprobs stats: min={logprobs.min().item():.6f}, max={logprobs.max().item():.6f}, mean={logprobs.mean().item():.6f}")
-    print(f"[DEBUG PPO ACTOR] old_logprobs.shape: {old_logprobs.shape}")
-    print(f"[DEBUG PPO ACTOR] old_logprobs stats: min={old_logprobs.min().item():.6f}, max={old_logprobs.max().item():.6f}, mean={old_logprobs.mean().item():.6f}")
-    print(f"[DEBUG PPO ACTOR] advantages.shape: {advantages.shape}")
-    print(f"[DEBUG PPO ACTOR] advantages stats: min={advantages.min().item():.6f}, max={advantages.max().item():.6f}, mean={advantages.mean().item():.6f}")
-    print(f"[DEBUG PPO ACTOR] clip_ratio_low: {clip_ratio_low}, clip_ratio_high: {clip_ratio_high}")
-    if clip_ratio_c is not None:
-        print(f"[DEBUG PPO ACTOR] clip_ratio_c: {clip_ratio_c}")
-    print(f"[DEBUG PPO ACTOR] loss_mask.shape: {loss_mask.shape if loss_mask is not None else None}")
-    print(f"[DEBUG PPO ACTOR] critic_warmup: {critic_warmup}")
-    if clip_log_ratio_min is not None:
-        print(f"[DEBUG PPO ACTOR] clip_log_ratio_min: {clip_log_ratio_min}")
-    if clip_log_ratio_max is not None:
-        print(f"[DEBUG PPO ACTOR] clip_log_ratio_max: {clip_log_ratio_max}")
+    if fast_path_zero_loss_mask and (
+        loss_mask is not None and loss_mask[0].sum() == 0.0
+    ):
+        return torch.tensor(0.0, device=logprobs.device), {
+            "actor/token_num": torch.tensor(0.0, device=logprobs.device),
+            "actor/policy_loss": torch.tensor(0.0, device=logprobs.device),
+            "actor/policy_loss_mbs_mean": torch.tensor(0.0, device=logprobs.device),
+            "actor/policy_loss_abs": torch.tensor(0.0, device=logprobs.device),
+            "actor/ratio": torch.tensor(0.0, device=logprobs.device),
+            "actor/clipped_ratio": torch.tensor(0.0, device=logprobs.device),
+            "actor/dual_cliped_ratio": torch.tensor(0.0, device=logprobs.device),
+            "actor/approx_kl": torch.tensor(0.0, device=logprobs.device),
+            "actor/clip_fraction": torch.tensor(0.0, device=logprobs.device),
+        }
 
     loss_mask_ratio = None
 
@@ -138,47 +226,37 @@ def compute_ppo_actor_loss(
     if loss_mask is None:
         loss_mask = torch.ones_like(logprobs).bool()
 
-    assert logprobs.dtype == torch.float32
-    assert old_logprobs.dtype == torch.float32
-    assert advantages.dtype == torch.float32
+    assert logprobs.dtype == torch.float32, (
+        "logprobs must be float32 to keep numerical stability"
+    )
+    assert old_logprobs.dtype == torch.float32, (
+        "old_logprobs must be float32 to keep numerical stability"
+    )
+    assert advantages.dtype == torch.float32, (
+        "advantages must be float32 to keep numerical stability"
+    )
 
     loss_mask_count = loss_mask.count_nonzero() or 1
+    # For numerical stability.
     log_ratio = logprobs - old_logprobs
-    print(f"[DEBUG PPO ACTOR] log_ratio stats: min={log_ratio.min().item():.6f}, max={log_ratio.max().item():.6f}, mean={log_ratio.mean().item():.6f}")
-    
     if clip_log_ratio_min is not None:
         log_ratio = torch.clamp(log_ratio, min=clip_log_ratio_min)
-        print(f"[DEBUG PPO ACTOR] log_ratio AFTER clip_log_ratio_min: min={log_ratio.min().item():.6f}")
     if clip_log_ratio_max is not None:
         log_ratio = torch.clamp(log_ratio, max=clip_log_ratio_max)
-        print(f"[DEBUG PPO ACTOR] log_ratio AFTER clip_log_ratio_max: max={log_ratio.max().item():.6f}")
-        
     ratio = torch.where(loss_mask, torch.exp(log_ratio), 0)
-    print(f"[DEBUG PPO ACTOR] ratio stats: min={ratio.min().item():.6f}, max={ratio.max().item():.6f}, mean={ratio.mean().item():.6f}")
-    print(f"[DEBUG PPO ACTOR] ratio (1.0 - ratio) stats: min={(1.0-ratio).min().item():.6f}, max={(1.0-ratio).max().item():.6f}")
-    
     approx_kl = torch.where(loss_mask, log_ratio.detach(), 0.0)
 
     clipped_ratio = torch.clamp(ratio, 1.0 - clip_ratio_low, 1.0 + clip_ratio_high)
-    print(f"[DEBUG PPO ACTOR] clipped_ratio stats: min={clipped_ratio.min().item():.6f}, max={clipped_ratio.max().item():.6f}")
-    
     policy_loss1 = -advantages * ratio
     policy_loss2 = -advantages * clipped_ratio
-    print(f"[DEBUG PPO ACTOR] policy_loss1 stats: min={policy_loss1.min().item():.6f}, max={policy_loss1.max().item():.6f}")
-    print(f"[DEBUG PPO ACTOR] policy_loss2 stats: min={policy_loss2.min().item():.6f}, max={policy_loss2.max().item():.6f}")
 
     clip_mask = policy_loss1.detach() < policy_loss2.detach()
-    print(f"[DEBUG PPO ACTOR] clip_mask true count: {clip_mask.sum().item()}")
 
     policy_loss = torch.max(policy_loss1, policy_loss2)
-    print(f"[DEBUG PPO ACTOR] policy_loss (after max) stats: min={policy_loss.min().item():.6f}, max={policy_loss.max().item():.6f}")
-    
     if clip_ratio_c is not None:
-        assert clip_ratio_c > 1.0, clip_ratio_c
+        assert clip_ratio_c > 1.0, "clip_ratio_c must be greater than 1.0"
         policy_loss3 = torch.sign(advantages) * clip_ratio_c * advantages
         dual_clip_mask = policy_loss3.detach() < policy_loss.detach()
-        print(f"[DEBUG PPO ACTOR] policy_loss3 stats: min={policy_loss3.min().item():.6f}, max={policy_loss3.max().item():.6f}")
-        print(f"[DEBUG PPO ACTOR] dual_clip_mask true count: {dual_clip_mask.sum().item()}")
         policy_loss = torch.min(policy_loss, policy_loss3)
     else:
         dual_clip_mask = torch.zeros_like(clip_mask)
@@ -188,8 +266,7 @@ def compute_ppo_actor_loss(
     )
     policy_loss = loss_agg_func(
         policy_loss, loss_mask, loss_mask_ratio
-    )
-    print(f"[DEBUG PPO ACTOR] Final policy_loss (after aggregation): {policy_loss.item():.6f}")
+    )  # default max_episode_steps is None
 
     clip_mask = policy_loss1.detach() < policy_loss2.detach()
     dual_clip_mask = (dual_clip_mask * loss_mask).bool()
@@ -201,11 +278,6 @@ def compute_ppo_actor_loss(
 
     if critic_warmup:
         policy_loss = torch.tensor(0.0, device=policy_loss.device)
-        print("[DEBUG PPO ACTOR] CRITIC WARMUP MODE - policy_loss set to 0")
-
-    print(f"[DEBUG PPO ACTOR] clip_fraction: {clip_fraction.item():.6f}")
-    print(f"[DEBUG PPO ACTOR] approx_kl: {approx_kl.item():.6f}")
-    print("[DEBUG PPO ACTOR] ====== EXITING ======" + "\n" + "="*80 + "\n")
 
     # Compile metrics for logging
     loss_mask_for_metrics = loss_mask
@@ -261,21 +333,6 @@ def compute_ppo_critic_loss(
     Returns:
         Tuple[torch.Tensor, Dict]: (critic_loss, metrics_dict)
     """
-    print("\n" + "="*80)
-    print("[DEBUG PPO CRITIC LOSS] ====== ENTERING compute_ppo_critic_loss ======")
-    print(f"[DEBUG] values.shape: {values.shape}, dtype: {values.dtype}")
-    print(f"[DEBUG] values stats: min={values.min().item():.6f}, max={values.max().item():.6f}, mean={values.mean().item():.6f}, std={values.std().item():.6f}")
-    print(f"[DEBUG] values has_nan: {torch.isnan(values).any().item()}, has_inf: {torch.isinf(values).any().item()}")
-    print(f"[DEBUG] returns.shape: {returns.shape}, dtype: {returns.dtype}")
-    print(f"[DEBUG] returns stats: min={returns.min().item():.6f}, max={returns.max().item():.6f}, mean={returns.mean().item():.6f}, std={returns.std().item():.6f}")
-    print(f"[DEBUG] returns has_nan: {torch.isnan(returns).any().item()}, has_inf: {torch.isinf(returns).any().item()}")
-    print(f"[DEBUG] prev_values.shape: {prev_values.shape if prev_values is not None else None}")
-    if prev_values is not None:
-        print(f"[DEBUG] prev_values stats: min={prev_values.min().item():.6f}, max={prev_values.max().item():.6f}, mean={prev_values.mean().item():.6f}")
-        print(f"[DEBUG] prev_values has_nan: {torch.isnan(prev_values).any().item()}, has_inf: {torch.isinf(prev_values).any().item()}")
-    print(f"[DEBUG] loss_mask.shape: {loss_mask.shape if loss_mask is not None else None}")
-    print(f"[DEBUG] value_clip: {value_clip}, huber_delta: {huber_delta}")
-    
     loss_mask_ratio = None
     loss_agg_func = masked_mean
 
@@ -290,56 +347,57 @@ def compute_ppo_critic_loss(
     value_pred_clipped = prev_values + (values - prev_values).clamp(
         -value_clip, value_clip
     )  # [bsz, ] | [bsz, chunk-step]
-    print(f"[DEBUG] value_pred_clipped.shape: {value_pred_clipped.shape}")
-    print(f"[DEBUG] (values - prev_values).shape: {(values - prev_values).shape}")
-    print(f"[DEBUG] (values - prev_values) stats: min={(values - prev_values).min().item():.6f}, max={(values - prev_values).max().item():.6f}")
 
     value_loss_original = huber_loss(
         returns - values, huber_delta
     )  # [bsz, ] | [bsz, chunk-step]
-    print(f"[DEBUG] value_loss_original.shape: {value_loss_original.shape}")
-    print(f"[DEBUG] value_loss_original stats: min={value_loss_original.min().item():.6f}, max={value_loss_original.max().item():.6f}")
-    print(f"[DEBUG] (returns - values) stats: min={(returns - values).min().item():.6f}, max={(returns - values).max().item():.6f}")
-    
     value_loss_clipped = huber_loss(
         returns - value_pred_clipped, huber_delta
     )  # [bsz, ] | [bsz, chunk-step]
     value_loss = torch.max(value_loss_original, value_loss_clipped)
     value_loss = loss_agg_func(value_loss, loss_mask, loss_mask_ratio)
-    print(f"[DEBUG] value_loss (after max & aggregation): {value_loss.item():.6f}")
 
     value_clip_indicator = (value_pred_clipped - prev_values).abs() > value_clip
     value_clip_ratio = value_clip_indicator.float().mean()
-    print(f"[DEBUG] value_clip_ratio: {value_clip_ratio.item():.6f}")
 
-    # Collect sufficient statistics for explained_variance so the caller can
-    # aggregate across all micro-batches before computing the final metric.
-    # Per-micro-batch computation is unreliable when loss_mask leaves only 2-8
-    # valid samples (variance estimates become noise).
+    # explained variance
     if loss_mask is not None:
-        masked_returns = returns[loss_mask].detach().float()
-        masked_values = values[loss_mask].detach().float()
+        masked_returns = returns[loss_mask]
+        masked_values = values[loss_mask]
     else:
-        masked_returns = returns.detach().float()
-        masked_values = values.detach().float()
+        masked_returns = returns
+        masked_values = values
 
-    valid_mask = torch.isfinite(masked_returns) & torch.isfinite(masked_values)
-    ev_returns = masked_returns[valid_mask]
-    ev_values = masked_values[valid_mask]
-    ev_diff = ev_returns - ev_values
-    ev_count = ev_returns.numel()
+    var_returns = torch.var(masked_returns)
+    if torch.isnan(var_returns) or var_returns == 0:
+        explained_variance = torch.tensor(float("nan"), device=returns.device)
+    else:
+        var_diff = torch.var(masked_returns - masked_values)
+        if torch.isnan(var_diff):
+            explained_variance = torch.tensor(float("nan"), device=returns.device)
+        else:
+            explained_variance = 1 - var_diff / var_returns
 
+    # Compile metrics for logging
     metrics_data = {
-        "critic/value_loss": value_loss.detach().item(),
-        "critic/value_clip_ratio": value_clip_ratio.detach().item(),
-        # Sufficient statistics for global explained_variance computation
-        "_ev_sum_returns": ev_returns.sum().item() if ev_count > 0 else 0.0,
-        "_ev_sum_returns_sq": (ev_returns ** 2).sum().item() if ev_count > 0 else 0.0,
-        "_ev_sum_diff": ev_diff.sum().item() if ev_count > 0 else 0.0,
-        "_ev_sum_diff_sq": (ev_diff ** 2).sum().item() if ev_count > 0 else 0.0,
-        "_ev_count": float(ev_count),
+        "critic/value_loss": value_loss.detach(),
+        "critic/value_clip_ratio": value_clip_ratio.detach(),
+        "critic/explained_variance": explained_variance.detach(),
     }
     return value_loss, metrics_data
+
+
+@register_policy_loss("decoupled_actor_critic")
+def compute_decoupled_ppo_actor_critic_loss(**kwargs) -> tuple[torch.Tensor, dict]:
+    """Compute decoupled PPO actor+critic loss."""
+    metrics_data = {}
+    actor_loss, actor_metrics_data = compute_decoupled_ppo_actor_loss(**kwargs)
+    critic_loss, critic_metrics_data = compute_ppo_critic_loss(**kwargs)
+
+    loss = actor_loss + critic_loss
+    metrics_data.update(actor_metrics_data)
+    metrics_data.update(critic_metrics_data)
+    return loss, metrics_data
 
 
 @register_policy_loss("actor_critic")
@@ -412,31 +470,17 @@ def compute_gspo_actor_loss_fn(
     clip_ratio_low: float = 0.2,
     clip_ratio_high: float = 0.2,
     kl_beta: float = 0.02,
-    log_ratio_clip: float = 20.0,  # 防止exp爆炸
+    log_ratio_clip: float = 20.0,
     loss_agg_func: Optional[Callable[..., torch.Tensor]] = masked_mean,
     **kwargs,
 ) -> tuple[torch.Tensor, dict]:
-    """
-    Strict Sequence-level PPO (GSPO version)
-
-    - ratio = exp(sum_t (logpi - logpi_old))
-    - seq_adv = sum_t advantage
-    - PPO clip on sequence ratio
-    - KL = 0.5 * (log_ratio^2)
-    """
-
     if loss_mask is None:
         loss_mask = torch.ones_like(logprobs).bool()
 
-    # 处理 broadcast
     if logprobs.ndim == 3 and loss_mask.shape[-1] == 1:
         loss_mask = loss_mask.expand_as(logprobs)
 
     reduce_dims = tuple(range(1, logprobs.ndim))
-
-    # -------------------------------------------------
-    # 1️⃣ 计算 sequence-level log-ratio (MEAN, per paper Eq.14: 1/|A| * sum)
-    # -------------------------------------------------
     log_diff = torch.where(
         loss_mask,
         logprobs - old_logprobs,
@@ -445,19 +489,13 @@ def compute_gspo_actor_loss_fn(
 
     token_count = loss_mask.sum(dim=reduce_dims, keepdim=True).clamp(min=1)
     seq_log_ratio = log_diff.sum(dim=reduce_dims, keepdim=True) / token_count
-
-    # 数值稳定
     seq_log_ratio = torch.clamp(
         seq_log_ratio,
         -log_ratio_clip,
         log_ratio_clip,
     )
-
     ratio = torch.exp(seq_log_ratio)
 
-    # -------------------------------------------------
-    # 2️⃣ 计算 sequence-level advantage (MEAN, advantage 已是 sequence-level 常量)
-    # -------------------------------------------------
     if advantages.ndim != logprobs.ndim:
         advantages = advantages.expand_as(logprobs)
 
@@ -466,32 +504,20 @@ def compute_gspo_actor_loss_fn(
         advantages,
         torch.zeros_like(advantages),
     )
-
     seq_adv = adv_masked.sum(dim=reduce_dims, keepdim=True) / token_count
 
-    # -------------------------------------------------
-    # 3️⃣ PPO Clipping (sequence-level)
-    # -------------------------------------------------
     clipped_ratio = torch.clamp(
         ratio,
         1.0 - clip_ratio_low,
         1.0 + clip_ratio_high,
     )
-
     policy_loss1 = -seq_adv * ratio
     policy_loss2 = -seq_adv * clipped_ratio
-
     policy_loss = torch.max(policy_loss1, policy_loss2)
 
-    # 有效序列 mask
     seq_mask = token_count > 0
-
     policy_loss_mean = loss_agg_func(policy_loss, seq_mask)
 
-    # -------------------------------------------------
-    # 4️⃣ KL penalty (稳定版)
-    # -------------------------------------------------
-    # approx KL ≈ 0.5 * (log_ratio)^2 (基于 sum，参考论文 Eq 18)
     seq_log_ratio_sum = log_diff.sum(dim=reduce_dims, keepdim=True)
     approx_kl = 0.5 * loss_agg_func(
         seq_log_ratio_sum.pow(2),
@@ -501,20 +527,12 @@ def compute_gspo_actor_loss_fn(
     pure_policy_loss = policy_loss_mean.clone()
     policy_loss_mean = policy_loss_mean + kl_beta * approx_kl
 
-    # -------------------------------------------------
-    # 5️⃣ Metrics
-    # -------------------------------------------------
     with torch.no_grad():
-
-        clip_mask = (ratio > 1.0 + clip_ratio_high) | (
-            ratio < 1.0 - clip_ratio_low
-        )
-
+        clip_mask = (ratio > 1.0 + clip_ratio_high) | (ratio < 1.0 - clip_ratio_low)
         clip_fraction = loss_agg_func(
             clip_mask.float(),
             seq_mask,
         )
-
         metrics_data = {
             "actor/policy_loss": pure_policy_loss,
             "actor/total_loss": policy_loss_mean.detach(),

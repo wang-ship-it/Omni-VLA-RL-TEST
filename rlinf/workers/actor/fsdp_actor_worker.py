@@ -12,34 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import builtins
 import os
 import time
 from functools import partial
 from typing import Optional
-
-_DEBUG_VERBOSE = (
-    os.getenv("OMNI_VLA_DEBUG_LOG", "0") == "1"
-    or os.getenv("OMNI_VLA_DEBUG_ACTOR", "0") == "1"
-)
-_DEBUG_EVERY = max(1, int(os.getenv("OMNI_VLA_DEBUG_EVERY", "1")))
-_DEBUG_COUNTER = 0
-_DEBUG_INCLUDE = [
-    s.strip() for s in os.getenv("OMNI_VLA_DEBUG_INCLUDE", "").split(",") if s.strip()
-]
-
-
-def print(*args, **kwargs):
-    global _DEBUG_COUNTER
-    if not _DEBUG_VERBOSE:
-        return
-    if _DEBUG_INCLUDE:
-        msg = " ".join(str(a) for a in args)
-        if not any(k in msg for k in _DEBUG_INCLUDE):
-            return
-    _DEBUG_COUNTER += 1
-    if _DEBUG_COUNTER % _DEBUG_EVERY == 0:
-        builtins.print(*args, **kwargs)
 
 import numpy as np
 import torch
@@ -171,21 +147,19 @@ class FSDPActor(FSDPModelManager, Worker):
         self.cfg = cfg
 
         self.response_len = (
-            self.cfg.actor.model.encoder_seq_length - self.cfg.data.max_prompt_length
+            cfg.actor.model.encoder_seq_length - cfg.data.max_prompt_length
         )
-        self.calculate_entropy = self.cfg.algorithm.calculate_entropy
+        self.calculate_entropy = cfg.algorithm.calculate_entropy
         self.calculate_entropy_loss = (
-            self.cfg.algorithm.entropy_bonus > 0 and self.calculate_entropy
+            cfg.algorithm.entropy_bonus > 0 and self.calculate_entropy
         )
-        self.kl_beta = self.cfg.algorithm.kl_beta
-        self.kl_penalty_type = self.cfg.algorithm.kl_penalty_type
+        self.kl_beta = cfg.algorithm.kl_beta
+        self.kl_penalty_type = cfg.algorithm.kl_penalty_type
         self.reinpp_kl_beta = cfg.algorithm.get("reinpp_kl_beta", 0.0)
         self.combine_reference_model = cfg.actor.get("combine_reference_model", True)
 
         self.total_batch_size_per_dp = (
-            self.cfg.data.rollout_batch_size
-            * self.cfg.algorithm.group_size
-            // self._world_size
+            cfg.data.rollout_batch_size * cfg.algorithm.group_size // self._world_size
         )
 
         self._rollout_group_name = cfg.rollout.group_name
@@ -202,20 +176,16 @@ class FSDPActor(FSDPModelManager, Worker):
             self._inference_group_name = None
             self._inference_world_size = 0
             self._inference_dst_map = None
-        self.loss_agg_func = get_loss_agg_func(self.cfg.algorithm.loss_agg_func)
-        self.enable_offload = (
-            self.cfg.actor.get("enable_offload", False) and not self.is_pipeline
+        self.loss_agg_func = get_loss_agg_func(cfg.algorithm.loss_agg_func)
+        self.enable_offload = not self.is_pipeline and cfg.actor.get(
+            "enable_offload", False
         )
-        self.micro_batch_size = self.cfg.actor.micro_batch_size
-        self.n_mini_batches = self.cfg.algorithm.n_minibatches
-        self.task_type = self.cfg.runner.task_type
-        self.entropy_op_type = self.cfg.algorithm.get("entropy_op_type", "flash_attn")
-        self.enable_dp_load_balance = self.cfg.actor.get(
-            "enable_dp_load_balance", False
-        )
-        self.lr_sched_sync_with_optim = self.cfg.actor.get(
-            "lr_sched_sync_with_optim", True
-        )
+        self.micro_batch_size = cfg.actor.micro_batch_size
+        self.n_mini_batches = cfg.algorithm.n_minibatches
+        self.task_type = cfg.runner.task_type
+        self.entropy_op_type = cfg.algorithm.get("entropy_op_type", "flash_attn")
+        self.enable_dp_load_balance = cfg.actor.get("enable_dp_load_balance", False)
+        self.lr_sched_sync_with_optim = cfg.actor.get("lr_sched_sync_with_optim", True)
         self.enable_dynamic_batch_size = cfg.runner.get(
             "enable_dynamic_batch_size", False
         )
@@ -450,6 +420,9 @@ class FSDPActor(FSDPModelManager, Worker):
                 last_result_len = result_len
                 result_len = all_reduce_int(len(rollout_results))
 
+        cliped_results = list(rollout_results[result_len:])
+        rollout_results = rollout_results[:result_len]
+
         batches = []
         for rollout_result in rollout_results:
             batch = rollout_result.to_actor_batch(
@@ -521,7 +494,7 @@ class FSDPActor(FSDPModelManager, Worker):
                 multi_modal_inputs[key] = torch.cat(
                     [inputs[key] for inputs in m_batch["multi_modal_inputs"]],
                     dim=0,
-                ).cuda()
+                ).to(Worker.torch_device_type)
 
         if self.enable_dynamic_batch_size:
             max_seq_len_pack = self.max_tokens_per_mbs
@@ -638,6 +611,7 @@ class FSDPActor(FSDPModelManager, Worker):
         input_channel: Channel,
         output_channel: Channel,
         compute_ref_logprobs: bool,
+        do_offload=False,
     ):
         """
         Compute prev/ref logprobs using the actor Model's forward.
@@ -646,7 +620,12 @@ class FSDPActor(FSDPModelManager, Worker):
             input_channel: The input channel to read from.
             output_channel: The output channel to send results to.
             compute_ref_logprobs: Whether to compute reference logprobs.
+            do_offload: Whether offload weights after inference is done
         """
+        assert not do_offload, (
+            "do_offload argument of run_inference/run_training is not supported in FSDP for now"
+        )
+
         inference_split = self.cfg.actor.get("inference_split", None)
         if inference_split is None:
             if not self.is_pipeline:
@@ -678,7 +657,7 @@ class FSDPActor(FSDPModelManager, Worker):
                 )
             )
             total_result_len += result_len
-            self.log_info(
+            self.log_debug(
                 f"[dynamic inference rank-{self._rank}] inference result_len={result_len}, total_result_len={total_result_len}/{total_result_len_per_dp}"
             )
             self._load_weight_and_optimizer()
@@ -718,7 +697,7 @@ class FSDPActor(FSDPModelManager, Worker):
                 min(total_result_len, self.cfg.algorithm.n_minibatches),
             )
             for split_result in split_results:
-                output_channel.put(split_result, async_op=True)
+                output_channel.put(split_result)
         assert total_result_len == total_result_len_per_dp, (
             f"Expected {total_result_len_per_dp} sequences from channel, but got {total_result_len}"
         )
@@ -756,7 +735,9 @@ class FSDPActor(FSDPModelManager, Worker):
                 is_last_micro_batch=(idx + 1) == micro_batch_cnt,
             )
             for k, v in m_batch.items():
-                m_batch[k] = v.cuda() if isinstance(v, torch.Tensor) else v
+                m_batch[k] = (
+                    v.to(Worker.torch_device_type) if isinstance(v, torch.Tensor) else v
+                )
 
             # batch for forward
             logprobs, entropy = self.forward_batch(m_batch, True)
@@ -790,25 +771,30 @@ class FSDPActor(FSDPModelManager, Worker):
                 )
 
             loss, mbs_metrics_data = policy_loss(
+                task_type=self.task_type,
                 loss_type=self.cfg.algorithm.loss_type,
                 loss_agg_func=self.loss_agg_func,
                 logprobs=logprobs,
                 old_logprobs=prev_logprobs,
                 advantages=advantages,
+                clip_ratio_c=clip_ratio_c,
                 clip_ratio_low=clip_ratio_low,
                 clip_ratio_high=clip_ratio_high,
-                clip_ratio_c=clip_ratio_c,
                 loss_mask=loss_mask,
-                task_type=self.task_type,
+                clip_log_ratio_min=self.cfg.algorithm.get("clip_log_ratio_min", None),
+                clip_log_ratio_max=self.cfg.algorithm.get("clip_log_ratio_max", None),
+                fast_path_zero_loss_mask=True,
             )
 
-            entropy_loss = torch.tensor(0.0, device=torch.cuda.current_device())
+            entropy_loss = torch.tensor(
+                0.0, device=Worker.torch_platform.current_device()
+            )
             if self.calculate_entropy:
                 entropy_loss = self.loss_agg_func(entropy, mask=loss_mask)
                 if self.calculate_entropy_loss:
                     loss = loss - self.cfg.algorithm.entropy_bonus * entropy_loss
 
-            kl_loss = torch.tensor(0.0, device=torch.cuda.current_device())
+            kl_loss = torch.tensor(0.0, device=Worker.torch_platform.current_device())
             if self.kl_beta > 0 and ref_logprobs is not None:
                 kld = kl_penalty(ref_logprobs, logprobs, self.kl_penalty_type)
                 kl_loss = self.loss_agg_func(kld, loss_mask)
@@ -903,8 +889,14 @@ class FSDPActor(FSDPModelManager, Worker):
         )
         return batch
 
-    def run_training(self, input_channel: Channel) -> tuple[dict, list]:
+    def run_training(
+        self, input_channel: Channel, do_offload=False
+    ) -> tuple[dict, list]:
         # Get all batches for this DP
+        assert not do_offload, (
+            "do_offload argument of run_inference/run_training is not supported in FSDP for now"
+        )
+
         if self.is_pipeline:
             return self.run_training_pipeline(input_channel)
 
@@ -972,49 +964,21 @@ class FSDPActor(FSDPModelManager, Worker):
         Args:
             batch (Dict[str, torch.Tensor]): The rollout batch.
         """
-        print("\n" + "="*80)
-        print("[DEBUG ADV COMPUTE] ====== ENTERING compute_advantages_and_returns ======")
-        print(f"[DEBUG ADV COMPUTE] batch keys: {list(batch.keys())}")
-        
-        if "rewards" in batch:
-            r = batch["rewards"]
-            print(f"[DEBUG ADV COMPUTE] rewards shape: {r.shape}, dtype: {r.dtype}")
-            print(f"[DEBUG ADV COMPUTE] rewards stats: min={r.min().item():.6f}, max={r.max().item():.6f}, mean={r.mean().item():.6f}")
-            print(f"[DEBUG ADV COMPUTE] rewards sample (flattened, first 30): {r.flatten()[:30]}")
-        
-        if "response_mask" in batch:
-            rm = batch["response_mask"]
-            print(f"[DEBUG ADV COMPUTE] response_mask shape: {rm.shape}")
-            print(f"[DEBUG ADV COMPUTE] response_mask sample (first 5 rows): {rm[:5].flatten()[:30]}")
-        
-        if "dones" in batch:
-            d = batch["dones"]
-            print(f"[DEBUG ADV COMPUTE] dones shape: {d.shape}")
-            print(f"[DEBUG ADV COMPUTE] dones sample: {d.flatten()[:20]}")
-            print(f"[DEBUG ADV COMPUTE] dones sum (episode ends): {d.sum().item()}, dtype: {d.dtype}")
-        
-        print(f"[DEBUG ADV COMPUTE] adv_type: {self.cfg.algorithm.adv_type}")
-        print(f"[DEBUG ADV COMPUTE] group_size: {self.cfg.algorithm.group_size}")
-        print(f"[DEBUG ADV COMPUTE] task_type: {self.task_type}")
-        
         with self.worker_timer():
             if batch.get("advantages", None) is None:
                 mask = batch["response_mask"][:, -self.response_len :]
-                print(f"[DEBUG ADV COMPUTE] mask shape (for advantage calc): {mask.shape}")
-                print(f"[DEBUG ADV COMPUTE] mask true count: {mask.sum().item()}")
-                
                 advantages, _ = calculate_adv_and_returns(
                     task_type=self.task_type,
                     adv_type=self.cfg.algorithm.adv_type,
-                    rewards=batch["rewards"].cuda(),
-                    loss_mask=mask.cuda(),
+                    rewards=batch["rewards"].to(Worker.torch_device_type),
+                    loss_mask=mask.to(Worker.torch_device_type),
                     group_size=self.cfg.algorithm.group_size,
                     kl_beta=self.reinpp_kl_beta,
                     kl_penalty_type=self.kl_penalty_type,
-                    logprob=batch["prev_logprobs"].cuda()
+                    logprob=batch["prev_logprobs"].to(Worker.torch_device_type)
                     if "prev_logprobs" in batch
                     else None,
-                    ref_logprob=batch["ref_logprobs"].cuda()
+                    ref_logprob=batch["ref_logprobs"].to(Worker.torch_device_type)
                     if "ref_logprobs" in batch
                     else None,
                     use_reinpp_baseline=self.cfg.algorithm.get(
@@ -1022,11 +986,7 @@ class FSDPActor(FSDPModelManager, Worker):
                     ),
                 )
                 batch["advantages"] = advantages
-                print(f"[DEBUG ADV COMPUTE] advantages shape (AFTER calc): {advantages.shape}")
-                print(f"[DEBUG ADV COMPUTE] advantages stats: min={advantages.min().item():.6f}, max={advantages.max().item():.6f}, mean={advantages.mean().item():.6f}")
 
-        print(f"[DEBUG ADV COMPUTE] Final batch['advantages'] shape: {batch.get('advantages', torch.tensor([])).shape}")
-        print("[DEBUG ADV COMPUTE] ====== EXITING ======" + "\n" + "="*80 + "\n")
         return batch
 
 
@@ -1053,7 +1013,7 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
         )
 
         self.enable_sft_co_train = cfg.actor.get("enable_sft_co_train", False)
-
+        self.version = 0
         if self.enable_sft_co_train:
             self._build_sft_data_loader()
 
@@ -1109,14 +1069,19 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
             self.load_param_and_grad(self.device)
 
         state_dict = self.get_model_state_dict(cpu_offload=False, full_state_dict=True)
+        handles = []
         for rank in self._weight_dst_rank_in_rollout:
-            self.send(
-                state_dict,
-                self._rollout_group_name,
-                rank,
-                async_op=True,
-                options=self._sync_weight_comm_options,
+            handles.append(
+                self.send(
+                    state_dict,
+                    self._rollout_group_name,
+                    rank,
+                    async_op=True,
+                    options=self._sync_weight_comm_options,
+                )
             )
+        for handle in handles:
+            handle.wait()
         if self.enable_offload and not self.is_weight_offloaded:
             self.offload_param_and_grad()
 
@@ -1127,7 +1092,9 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
         Args:
             input_channel: The input channel to read from.
         """
-        send_num = self._component_placement.get_world_size("rollout") * self.stage_num
+        clear_memory(sync=False)
+
+        send_num = self._component_placement.get_world_size("env") * self.stage_num
         recv_num = self._component_placement.get_world_size("actor")
         split_num = compute_split_num(send_num, recv_num)
 
@@ -1158,14 +1125,6 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
                 "dones"
             ]  # [n_chunk_step, rollout_epoch x bsz, num_action_chunks]
             loss_mask, loss_mask_sum = compute_loss_mask(dones)
-            origin_loss_mask = loss_mask
-            response_mask = rollout_batch.get("response_mask", None)
-            if (
-                response_mask is not None
-                and isinstance(response_mask, torch.Tensor)
-                and response_mask.shape == loss_mask.shape
-            ):
-                loss_mask = loss_mask & response_mask.bool()
 
             if self.cfg.algorithm.reward_type == "chunk_level":
                 loss_mask = loss_mask.any(dim=-1, keepdim=True)
@@ -1173,12 +1132,6 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
 
             rollout_batch["loss_mask"] = loss_mask
             rollout_batch["loss_mask_sum"] = loss_mask_sum
-            print(
-                f"DEBUG: origin_loss_mask count: {origin_loss_mask.sum().item()} final_loss_mask count: {loss_mask.sum().item()}"
-            )
-            print(
-                f"DEBUG: response_mask count: {response_mask.sum().item() if isinstance(response_mask, torch.Tensor) else 'None'}"
-            )
 
         # filter data by rewards
         if self.cfg.algorithm.get("filter_rewards", False):
@@ -1221,8 +1174,13 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
                 reward_filter_mask.unsqueeze(0).expand(n_chunk_step, -1).unsqueeze(-1)
             )  # [n_chunk_step, batch, 1]
 
-            rollout_batch["reward_filter_mask"] = reward_filter_mask
-            rollout_batch["rewards"] = rollout_batch["rewards"] * reward_filter_mask
+            # update loss_mask
+            if rollout_batch.get("loss_mask", None) is not None:
+                rollout_batch["loss_mask"] = (
+                    reward_filter_mask & rollout_batch["loss_mask"]
+                )
+            else:
+                rollout_batch["loss_mask"] = reward_filter_mask
 
         return rollout_batch
 
@@ -1271,7 +1229,9 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
                 )
             training_config_name = self.cfg.actor.config_name
             data_loader_config = get_openpi_config(
-                training_config_name, model_path=self.cfg.actor.model.model_path
+                training_config_name,
+                model_path=self.cfg.actor.model.model_path,
+                data_kwargs=getattr(self.cfg.actor, "openpi_data", None),
             )
             self.data_loader = _data.create_data_loader(
                 data_loader_config, framework="pytorch", shuffle=True
@@ -1345,71 +1305,6 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
         """
         Run the training process using the received rollout batch.
         """
-        print("\n" + "="*80)
-        print("[DEBUG TRAIN DATA] ====== ENTERING run_training ======")
-        print(f"[DEBUG TRAIN DATA] rollout_batch keys: {list(self.rollout_batch.keys())}")
-        for key, val in self.rollout_batch.items():
-            if isinstance(val, torch.Tensor):
-                print(f"[DEBUG TRAIN DATA]   {key}: shape={val.shape}, dtype={val.dtype}")
-                if val.numel() < 50:
-                    print(f"[DEBUG TRAIN DATA]   {key} values: {val.flatten()[:50]}")
-                else:
-                    if val.dtype in [torch.bool, torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64]:
-                        print(f"[DEBUG TRAIN DATA]   {key} stats: min={val.min().item()}, max={val.max().item()}, mean={val.float().mean().item():.6f}, sum={val.sum().item()}")
-                    else:
-                        print(f"[DEBUG TRAIN DATA]   {key} stats: min={val.min().item():.6f}, max={val.max().item():.6f}, mean={val.mean().item():.6f}")
-            elif isinstance(val, dict):
-                print(f"[DEBUG TRAIN DATA]   {key}: dict with keys {list(val.keys())}")
-                for subkey, subval in val.items():
-                    if isinstance(subval, torch.Tensor):
-                        print(f"[DEBUG TRAIN DATA]     {subkey}: shape={subval.shape}")
-                    else:
-                        print(f"[DEBUG TRAIN DATA]     {subkey}: {type(subval)}")
-            else:
-                print(f"[DEBUG TRAIN DATA]   {key}: {type(val)}")
-        
-        print("\n[DEBUG TRAIN DATA] === forward_inputs sample ===")
-        if "forward_inputs" in self.rollout_batch:
-            fi = self.rollout_batch["forward_inputs"]
-            if isinstance(fi, dict):
-                for fk, fv in fi.items():
-                    if isinstance(fv, torch.Tensor):
-                        print(f"[DEBUG TRAIN DATA]   forward_inputs[{fk}]: shape={fv.shape}")
-                    elif isinstance(fv, (list, tuple)):
-                        print(f"[DEBUG TRAIN DATA]   forward_inputs[{fk}]: list of len {len(fv)}")
-                        if len(fv) > 0 and isinstance(fv[0], torch.Tensor):
-                            print(f"[DEBUG TRAIN DATA]     first element shape: {fv[0].shape}")
-                    elif isinstance(fv, str):
-                        print(f"[DEBUG TRAIN DATA]   forward_inputs[{fk}]: \"{fv[:100]}...\"" if len(fv) > 100 else f"[DEBUG TRAIN DATA]   forward_inputs[{fk}]: \"{fv}\"")
-                    else:
-                        print(f"[DEBUG TRAIN DATA]   forward_inputs[{fk}]: {type(fv)}")
-        
-        print("\n[DEBUG TRAIN DATA] === rewards sample ===")
-        if "rewards" in self.rollout_batch:
-            r = self.rollout_batch["rewards"]
-            print(f"[DEBUG TRAIN DATA] rewards shape: {r.shape}")
-            print(f"[DEBUG TRAIN DATA] rewards sample values: {r.flatten()[:20]}")
-        
-        print("\n[DEBUG TRAIN DATA] === prev_logprobs sample ===")
-        if "prev_logprobs" in self.rollout_batch:
-            plp = self.rollout_batch["prev_logprobs"]
-            print(f"[DEBUG TRAIN DATA] prev_logprobs shape: {plp.shape}")
-            print(f"[DEBUG TRAIN DATA] prev_logprobs sample: {plp.flatten()[:20]}")
-        
-        print("\n[DEBUG TRAIN DATA] === response_mask sample ===")
-        if "response_mask" in self.rollout_batch:
-            rm = self.rollout_batch["response_mask"]
-            print(f"[DEBUG TRAIN DATA] response_mask shape: {rm.shape}")
-            print(f"[DEBUG TRAIN DATA] response_mask sample (first 5 rows): {rm[:5].flatten()[:30]}")
-        
-        print("\n[DEBUG TRAIN DATA] === dones sample ===")
-        if "dones" in self.rollout_batch:
-            d = self.rollout_batch["dones"]
-            print(f"[DEBUG TRAIN DATA] dones shape: {d.shape}")
-            print(f"[DEBUG TRAIN DATA] dones sample: {d.flatten()[:20]}")
-        
-        print("[DEBUG TRAIN DATA] ====== EXITING ======" + "\n" + "="*80 + "\n")
-        
         if self.is_weight_offloaded:
             self.load_param_and_grad(self.device)
         if self.is_optimizer_offloaded:
@@ -1475,7 +1370,8 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
                 self.optimizer.zero_grad()
                 for idx, batch in enumerate(train_micro_batch):
                     batch = put_tensor_device(
-                        batch, f"cuda:{int(os.environ['LOCAL_RANK'])}"
+                        batch,
+                        f"{Worker.torch_device_type}:{int(os.environ['LOCAL_RANK'])}",
                     )
                     backward_ctx = self.before_micro_batch(
                         self.model,
@@ -1519,69 +1415,11 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
                             **kwargs,
                         )
 
-                    print("\n" + "="*80)
-                    print("[DEBUG FORWARD OUTPUT] ====== output_dict contents ======")
-                    for ok, ov in output_dict.items():
-                        if isinstance(ov, torch.Tensor):
-                            print(f"[DEBUG FORWARD OUTPUT]   {ok}: shape={ov.shape}, dtype={ov.dtype}")
-                            if ov.numel() < 20:
-                                print(f"[DEBUG FORWARD OUTPUT]   {ok} values: {ov.flatten()}")
-                            else:
-                                print(f"[DEBUG FORWARD OUTPUT]   {ok} stats: min={ov.min().item():.6f}, max={ov.max().item():.6f}, mean={ov.mean().item():.6f}")
-                        elif isinstance(ov, (list, tuple)):
-                            print(f"[DEBUG FORWARD OUTPUT]   {ok}: list/tuple of len {len(ov)}")
-                        else:
-                            print(f"[DEBUG FORWARD OUTPUT]   {ok}: {type(ov)}")
-                    print("[DEBUG FORWARD OUTPUT] ====== END output_dict ======" + "\n" + "="*80 + "\n")
-
                     if (
                         SupportedModel(self.cfg.actor.model.model_type)
                         == SupportedModel.GR00T
                     ):
                         prev_logprobs = output_dict["prev_logprobs"]
-
-                    print("\n" + "="*80)
-                    print("[DEBUG POLICY LOSS KWARGS] ====== kwargs for policy_loss ======")
-                    print(f"[DEBUG POLICY LOSS KWARGS]   loss_type: {self.cfg.algorithm.loss_type}")
-                    print(f"[DEBUG POLICY LOSS KWARGS]   logprob_type: {self.cfg.algorithm.logprob_type}")
-                    print(f"[DEBUG POLICY LOSS KWARGS]   reward_type: {self.cfg.algorithm.reward_type}")
-                    print(f"[DEBUG POLICY LOSS KWARGS]   single_action_dim: {self.cfg.actor.model.get('action_dim', 7)}")
-                    print(f"[DEBUG POLICY LOSS KWARGS]   clip_ratio_high: {self.cfg.algorithm.clip_ratio_high}")
-                    print(f"[DEBUG POLICY LOSS KWARGS]   clip_ratio_low: {self.cfg.algorithm.clip_ratio_low}")
-                    print(f"[DEBUG POLICY LOSS KWARGS]   value_clip: {self.cfg.algorithm.get('value_clip', None)}")
-                    print(f"[DEBUG POLICY LOSS KWARGS]   huber_delta: {self.cfg.algorithm.get('huber_delta', None)}")
-                    print(f"[DEBUG POLICY LOSS KWARGS]   task_type: {self.cfg.runner.task_type}")
-                    print(f"[DEBUG POLICY LOSS KWARGS]   critic_warmup: {self.optimizer_steps < self.critic_warmup_steps}")
-                    
-                    logprobs_sample = output_dict["logprobs"]
-                    print(f"[DEBUG POLICY LOSS KWARGS]   logprobs (output): shape={logprobs_sample.shape}")
-                    print(f"[DEBUG POLICY LOSS KWARGS]   logprobs sample: {logprobs_sample.flatten()[:10]}")
-                    
-                    print(f"[DEBUG POLICY LOSS KWARGS]   prev_logprobs shape: {prev_logprobs.shape}")
-                    print(f"[DEBUG POLICY LOSS KWARGS]   prev_logprobs sample: {prev_logprobs.flatten()[:10]}")
-                    
-                    print(f"[DEBUG POLICY LOSS KWARGS]   advantages shape: {advantages.shape}")
-                    print(f"[DEBUG POLICY LOSS KWARGS]   advantages sample: {advantages.flatten()[:10]}")
-                    
-                    if returns is not None:
-                        print(f"[DEBUG POLICY LOSS KWARGS]   returns shape: {returns.shape}")
-                        print(f"[DEBUG POLICY LOSS KWARGS]   returns sample: {returns.flatten()[:10]}")
-                    else:
-                        print(f"[DEBUG POLICY LOSS KWARGS]   returns: None")
-                    
-                    if prev_values is not None:
-                        print(f"[DEBUG POLICY LOSS KWARGS]   prev_values shape: {prev_values.shape}")
-                        print(f"[DEBUG POLICY LOSS KWARGS]   prev_values sample: {prev_values.flatten()[:10]}")
-                    else:
-                        print(f"[DEBUG POLICY LOSS KWARGS]   prev_values: None")
-                    
-                    if loss_mask is not None:
-                        print(f"[DEBUG POLICY LOSS KWARGS]   loss_mask shape: {loss_mask.shape}")
-                        print(f"[DEBUG POLICY LOSS KWARGS]   loss_mask true count: {loss_mask.sum().item()}")
-                    else:
-                        print(f"[DEBUG POLICY LOSS KWARGS]   loss_mask: None")
-                    
-                    print("[DEBUG POLICY LOSS KWARGS] ====== END kwargs ======" + "\n" + "="*80 + "\n")
 
                     kwargs = {
                         "loss_type": self.cfg.algorithm.loss_type,
@@ -1607,7 +1445,9 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
                     }
                     loss, metrics_data = policy_loss(**kwargs)
 
-                    entropy_loss = torch.tensor(0.0, device=torch.cuda.current_device())
+                    entropy_loss = torch.tensor(
+                        0.0, device=Worker.torch_platform.current_device()
+                    )
                     if (
                         self.cfg.algorithm.entropy_bonus > 0
                         and not kwargs["critic_warmup"]
@@ -1633,7 +1473,7 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
                     metrics_data["actor/total_loss"] = loss.detach().item()
                     append_to_dict(metrics, metrics_data)
 
-                torch.cuda.empty_cache()
+                self.torch_platform.empty_cache()
 
                 grad_norm, lr_list = self.optimizer_step()
                 data = {
@@ -1647,57 +1487,17 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
         self.lr_scheduler.step()
         self.optimizer.zero_grad()
         clear_memory()
-        ev_keys = ("_ev_sum_returns", "_ev_sum_returns_sq", "_ev_sum_diff", "_ev_sum_diff_sq", "_ev_count")
-        ev_stats = {k: sum(metrics.pop(k)) for k in ev_keys if k in metrics}
-
         mean_metric_dict = {key: np.mean(value) for key, value in metrics.items()}
         mean_metric_dict = all_reduce_dict(
             mean_metric_dict, op=torch.distributed.ReduceOp.AVG
         )
 
-        ev_tensor = torch.tensor(
-            [
-                ev_stats.get("_ev_sum_returns", 0.0),
-                ev_stats.get("_ev_sum_returns_sq", 0.0),
-                ev_stats.get("_ev_sum_diff", 0.0),
-                ev_stats.get("_ev_sum_diff_sq", 0.0),
-                ev_stats.get("_ev_count", 0.0),
-            ],
-            device=torch.cuda.current_device(),
-            dtype=torch.float64,
-        )
-        torch.distributed.all_reduce(ev_tensor, op=torch.distributed.ReduceOp.SUM)
-        total_count = ev_tensor[4].item()
-        ev_valid = 0.0
-        var_r = 0.0
-        var_d = 0.0
-        if total_count >= 2:
-            mean_r = ev_tensor[0].item() / total_count
-            var_r = ev_tensor[1].item() / total_count - mean_r ** 2
-            mean_d = ev_tensor[2].item() / total_count
-            var_d = ev_tensor[3].item() / total_count - mean_d ** 2
-            if var_r > 1e-8:
-                mean_metric_dict["critic/explained_variance"] = 1.0 - var_d / var_r
-                ev_valid = 1.0
-            else:
-                mean_metric_dict["critic/explained_variance"] = 0.0
-        else:
-            mean_metric_dict["critic/explained_variance"] = 0.0
-        mean_metric_dict["critic/explained_variance_valid"] = ev_valid
-        print(
-            "[DEBUG EV AGG] "
-            f"_ev_count={total_count:.0f} "
-            f"_ev_var_returns={var_r:.8f} "
-            f"_ev_var_diff={var_d:.8f} "
-            f"critic/explained_variance={mean_metric_dict['critic/explained_variance']:.6f} "
-            f"critic/explained_variance_valid={ev_valid:.0f}"
-        )
-
         return mean_metric_dict
 
-    def set_global_step(self, global_step) -> None:
+    def set_global_step(self, global_step: int) -> None:
         """
         Set the global step for the model, if needed.
         """
+        self.version = global_step
         if hasattr(self.model, "set_global_step"):
             self.model.set_global_step(global_step)

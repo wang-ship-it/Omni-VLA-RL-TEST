@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import builtins
-import os
 from typing import Optional
 
 import torch
@@ -21,30 +19,6 @@ import torch
 from rlinf.algorithms.registry import register_advantage
 from rlinf.algorithms.utils import kl_penalty, safe_normalize
 from rlinf.utils.utils import masked_mean
-
-
-_DEBUG_VERBOSE = (
-    os.getenv("OMNI_VLA_DEBUG_LOG", "0") == "1"
-    or os.getenv("OMNI_VLA_DEBUG_ADV", "0") == "1"
-)
-_DEBUG_EVERY = max(1, int(os.getenv("OMNI_VLA_DEBUG_EVERY", "1")))
-_DEBUG_COUNTER = 0
-_DEBUG_INCLUDE = [
-    s.strip() for s in os.getenv("OMNI_VLA_DEBUG_INCLUDE", "").split(",") if s.strip()
-]
-
-
-def print(*args, **kwargs):
-    global _DEBUG_COUNTER
-    if not _DEBUG_VERBOSE:
-        return
-    if _DEBUG_INCLUDE:
-        msg = " ".join(str(a) for a in args)
-        if not any(k in msg for k in _DEBUG_INCLUDE):
-            return
-    _DEBUG_COUNTER += 1
-    if _DEBUG_COUNTER % _DEBUG_EVERY == 0:
-        builtins.print(*args, **kwargs)
 
 
 @register_advantage("gae")
@@ -79,31 +53,7 @@ def compute_gae_advantages_and_returns(
     Returns:
         Tuple[torch.Tensor, torch.Tensor]: (advantages, returns)
     """
-    print("\n" + "="*80)
-    print("[DEBUG GAE] ====== ENTERING compute_gae_advantages_and_returns ======")
-    print(f"[DEBUG GAE] rewards.shape: {rewards.shape}, dtype: {rewards.dtype}")
-    print(f"[DEBUG GAE] rewards stats: min={rewards.min().item():.6f}, max={rewards.max().item():.6f}, mean={rewards.mean().item():.6f}")
-    print(f"[DEBUG GAE] rewards has_nan: {torch.isnan(rewards).any().item()}, has_inf: {torch.isinf(rewards).any().item()}")
-    print(f"[DEBUG GAE] gamma: {gamma}, gae_lambda: {gae_lambda}")
-    if values is not None:
-        print(f"[DEBUG GAE] values.shape: {values.shape}")
-        print(f"[DEBUG GAE] values stats: min={values.min().item():.6f}, max={values.max().item():.6f}, mean={values.mean().item():.6f}")
-        print(f"[DEBUG GAE] values has_nan: {torch.isnan(values).any().item()}, has_inf: {torch.isinf(values).any().item()}")
-    else:
-        print("[DEBUG GAE] values is None (critic-free mode)")
-    if dones is not None:
-        print(f"[DEBUG GAE] dones.shape: {dones.shape}")
-        print(f"[DEBUG GAE] dones stats: sum={dones.sum().item()}, mean={dones.float().mean().item():.6f}")
-    else:
-        print("[DEBUG GAE] dones is None")
-    if loss_mask is not None:
-        print(f"[DEBUG GAE] loss_mask.shape: {loss_mask.shape}")
-        print(f"[DEBUG GAE] loss_mask true count: {loss_mask.sum().item()}")
-    else:
-        print("[DEBUG GAE] loss_mask is None")
-        
     T = rewards.shape[0]
-    print(f"[DEBUG GAE] T (sequence length): {T}")
     advantages = torch.zeros_like(rewards)
     returns = torch.zeros_like(rewards)
     gae = 0
@@ -112,11 +62,7 @@ def compute_gae_advantages_and_returns(
     if critic_free:
         gae_lambda = 1
         gamma = 1
-        print("[DEBUG GAE] Running in CRITIC-FREE mode (values is None)")
-    else:
-        print("[DEBUG GAE] Running in CRITIC mode with value function")
 
-    print(f"[DEBUG GAE] Starting GAE backward computation from step {T-1} to 0")
     for step in reversed(range(T)):
         if critic_free:
             delta = rewards[step]
@@ -126,34 +72,16 @@ def compute_gae_advantages_and_returns(
                 + gamma * values[step + 1] * (~dones[step + 1])
                 - values[step]
             )
-        
+
         gae = delta + gamma * gae_lambda * (~dones[step + 1]) * gae
         returns[step] = gae if critic_free else gae + values[step]
-        
-        if step == T-1 or step == 0:
-            delta_str = f"{delta.mean().item():.6f}" if delta.numel() > 1 else f"{delta.item():.6f}"
-            gae_str = f"{gae.mean().item():.6f}" if gae.numel() > 1 else f"{gae.item():.6f}"
-            returns_step_str = f"{returns[step].mean().item():.6f}" if returns[step].numel() > 1 else f"{returns[step].item():.6f}"
-            print(f"[DEBUG GAE] Step {step}: delta={delta_str}, gae={gae_str}, returns[{step}]={returns_step_str}")
 
     advantages = returns - values[:-1] if not critic_free else returns
-    
-    print(f"[DEBUG GAE] advantages.shape: {advantages.shape}")
-    print(f"[DEBUG GAE] advantages stats BEFORE normalization: min={advantages.min().item():.6f}, max={advantages.max().item():.6f}, mean={advantages.mean().item():.6f}")
-    print(f"[DEBUG GAE] returns.shape: {returns.shape}")
-    print(f"[DEBUG GAE] returns stats: min={returns.min().item():.6f}, max={returns.max().item():.6f}, mean={returns.mean().item():.6f}")
 
     if normalize_advantages:
-        print(f"[DEBUG GAE] Normalizing advantages...")
         advantages = safe_normalize(advantages, loss_mask=loss_mask)
-        print(f"[DEBUG GAE] advantages stats AFTER normalization: min={advantages.min().item():.6f}, max={advantages.max().item():.6f}, mean={advantages.mean().item():.6f}")
     if normalize_returns:
-        print(f"[DEBUG GAE] Normalizing returns...")
         returns = safe_normalize(returns, loss_mask=loss_mask)
-    
-    print(f"[DEBUG GAE] Final advantages stats: min={advantages.min().item():.6f}, max={advantages.max().item():.6f}, mean={advantages.mean().item():.6f}")
-    print(f"[DEBUG GAE] Final returns stats: min={returns.min().item():.6f}, max={returns.max().item():.6f}, mean={returns.mean().item():.6f}")
-    print("[DEBUG GAE] ====== EXITING ======" + "\n" + "="*80 + "\n")
 
     return advantages, returns
 
@@ -199,7 +127,7 @@ def compute_grpo_dynamic_advantages(
     loss_mask: torch.Tensor,
     group_size: int,
     idx_to_traj: list[int],
-    advantage_mode: str = "turn",
+    advantage_mode: str = "turn",  # "trajectory" or "turn"
     **kwargs,
 ):
     """
@@ -210,9 +138,14 @@ def compute_grpo_dynamic_advantages(
     - Trajectories 0-3 belong to question 0, 4-7 to question 1, etc.
     - We must compute GRPO separately for each question's group_size trajectories
 
-    One advantage computation modes:
+    Two advantage computation modes:
+    1. "trajectory": Trajectory-level GRPO (Method 1)
+       - Compute mean/std over group_size trajectory rewards per question
+       - Broadcast same advantage to all turns in a trajectory
+       - Example: Q0 has 4 trajs with 1,2,3,4 turns. Compute GRPO over 4 traj rewards,
+                  then assign traj0_adv to its 1 turn, traj1_adv to its 2 turns, etc.
 
-    1. "turn": Turn-level GRPO
+    2. "turn": Turn-level GRPO (Method 2)
        - Compute mean/std over all turns within each question
        - Example: Q0 has 4 trajs with 1,2,3,4 turns = 10 turns total.
                   Compute GRPO over these 10 turn rewards (currently all same within traj).
@@ -223,67 +156,98 @@ def compute_grpo_dynamic_advantages(
         loss_mask: Shape [seq_len, num_sequence] after preprocessing
         group_size: Number of trajectories per question (e.g., 4)
         idx_to_traj: List mapping turn_idx -> global_traj_idx
-        advantage_mode: "turn"
+        advantage_mode: "trajectory" or "turn"
 
     Returns:
         advantages: Shape [seq_len, num_sequence]
     """
     num_sequence = len(idx_to_traj)
 
-    # Handle rewards shape - squeeze if needed
-    if rewards.ndim == 2:
-        rewards_flat = rewards.squeeze(-1)  # [num_sequence, 1] -> [num_sequence]
-    else:
-        rewards_flat = rewards  # Already [num_sequence]
+    rewards_flat = rewards.squeeze(-1)
 
     assert rewards_flat.numel() == num_sequence, (
         f"Rewards size mismatch: {rewards_flat.numel()} != {num_sequence}"
     )
 
-    # Determine number of questions
     num_trajectories = max(idx_to_traj) + 1
     num_questions = num_trajectories // group_size
     assert num_trajectories % group_size == 0, (
         f"num_trajectories {num_trajectories} not divisible by group_size {group_size}"
     )
 
-    # Initialize advantage tensor
     turn_advantages = torch.zeros(
         num_sequence, dtype=rewards.dtype, device=rewards.device
     )
-    if advantage_mode == "turn":
-        # For each question, compute GRPO over all its turns
 
-        # Step 1: Map each turn to its question
+    if advantage_mode == "trajectory":
+        # Aggregate turn rewards into per-trajectory rewards first.
+        trajectory_rewards = torch.zeros(
+            num_trajectories, dtype=rewards.dtype, device=rewards.device
+        )
+        trajectory_counts = torch.zeros(
+            num_trajectories, dtype=torch.long, device=rewards.device
+        )
+
+        for turn_idx, traj_idx in enumerate(idx_to_traj):
+            trajectory_rewards[traj_idx] += rewards_flat[turn_idx]
+            trajectory_counts[traj_idx] += 1
+
+        # Step 1: Average rewards per trajectory.
+        trajectory_rewards = trajectory_rewards / trajectory_counts.clamp(min=1).float()
+
+        # Step 2: reshape to [num_questions, group_size] for per-question GRPO.
+        trajectory_rewards_grouped = trajectory_rewards.view(num_questions, group_size)
+
+        # Step 3: compute per-question mean and std.
+        per_question_mean = trajectory_rewards_grouped.mean(
+            dim=-1, keepdim=True
+        )  # [num_questions, 1]
+        per_question_std = trajectory_rewards_grouped.std(
+            dim=-1, keepdim=True
+        )  # [num_questions, 1]
+
+        # Step 4: normalize within each question group.
+        normalized_trajectory_rewards = (
+            trajectory_rewards_grouped - per_question_mean
+        ) / (per_question_std + 1e-6)  # [num_questions, group_size]
+
+        # Step 5: flatten back to [num_trajectories].
+        normalized_trajectory_rewards = normalized_trajectory_rewards.view(-1)
+
+        # Step 6: broadcast trajectory advantages to all turns in that trajectory.
+        for turn_idx, traj_idx in enumerate(idx_to_traj):
+            turn_advantages[turn_idx] = normalized_trajectory_rewards[traj_idx]
+
+    elif advantage_mode == "turn":
+        # Step 1: map each turn to its owning question.
         turn_to_question = torch.tensor(
             [idx_to_traj[i] // group_size for i in range(num_sequence)],
             dtype=torch.long,
             device=rewards.device,
         )
 
-        # Step 2: Compute per-question statistics over all turns
+        # Step 2: normalize turn rewards within each question group.
         for question_idx in range(num_questions):
-            # Get all turns belonging to this question
             question_mask = turn_to_question == question_idx
             question_turn_rewards = rewards_flat[question_mask]
 
-            # Compute statistics for this question's turns
+            # Step 3: compute mean and std for all turns in this question.
             question_mean = question_turn_rewards.mean()
             question_std = question_turn_rewards.std()
 
-            # Normalize turns in this question
+            # Step 4: normalize turn rewards within the question.
             normalized_question_rewards = (question_turn_rewards - question_mean) / (
                 question_std + 1e-6
             )
 
-            # Assign back to turn_advantages
+            # Step 5: write normalized turn-level advantages back.
             turn_advantages[question_mask] = normalized_question_rewards
 
     else:
-        raise ValueError(f"Invalid advantage_mode: {advantage_mode}. Must be 'turn'")
+        raise ValueError(
+            f"Invalid advantage_mode: {advantage_mode}. Must be 'trajectory' or 'turn'"
+        )
 
-    # Broadcast advantages to match loss_mask shape [seq_len, num_sequence]
-    # turn_advantages is [num_sequence], we broadcast to [seq_len, num_sequence]
     advantages = torch.zeros_like(
         loss_mask, dtype=rewards.dtype
     ) + turn_advantages.view(1, -1)
@@ -299,36 +263,26 @@ def compute_gspo_advantages(
     group_size: int,
     **kwargs,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Compute advantages for GSPO (Group-level Sequence Policy Optimization).
-    Uses pairwise ranking: A_i = mean(r_i - r_j) for all j != i in the group.
-
-    Args:
-        rewards (torch.Tensor): Reward or score values. Shape: [num_groups * group_size] or [num_groups, group_size]
-        loss_mask (torch.Tensor): Loss mask for valid entries. Shape: [seq_len, num_sequences]
-        group_size (int): Number of sequences per group.
-
-    Returns:
-        tuple[torch.Tensor, torch.Tensor]: (advantages, None)
-    """
-    # Ensure rewards is 1D before reshaping
     if rewards.ndim == 2:
         rewards = rewards.reshape(-1)
 
-    grouped_rewards = rewards.view(-1, group_size)  # [num_groups, group_size]
+    grouped_rewards = rewards.view(-1, group_size)
+    mean = grouped_rewards.mean(dim=-1, keepdim=True)
+    std = grouped_rewards.std(dim=-1, keepdim=True)
 
-    # Eq. 16: normalize by mean and std over all G trajectories in the group
-    mean = grouped_rewards.mean(dim=-1, keepdim=True)  # [num_groups, 1]
-    std  = grouped_rewards.std(dim=-1, keepdim=True)   # [num_groups, 1]
+    advantages = (grouped_rewards - mean) / (std + 1e-6)
+    advantages = advantages.view(-1)
 
-    advantages = (grouped_rewards - mean) / (std + 1e-6)  # [num_groups, group_size]
-    advantages = advantages.view(-1)  # Flatten to [num_groups * group_size]
-
-    # Broadcast sequence-level advantage to all tokens in each sequence
-    # loss_mask shape: [seq_len, num_sequences]
-    # advantages shape: [num_sequences]
     seq_len = loss_mask.shape[0]
-    advantages = (torch.zeros(seq_len, advantages.shape[0], dtype=loss_mask.dtype, device=loss_mask.device) + advantages.unsqueeze(0)) * loss_mask
+    advantages = (
+        torch.zeros(
+            seq_len,
+            advantages.shape[0],
+            dtype=loss_mask.dtype,
+            device=loss_mask.device,
+        )
+        + advantages.unsqueeze(0)
+    ) * loss_mask
 
     return advantages, None
 
@@ -394,5 +348,34 @@ def compute_reinpp_advantages(
     rstd = var.clamp(min=1e-8).rsqrt()
 
     advantages = (advantages - mean) * rstd
+
+    return advantages, None
+
+
+@register_advantage("raw")
+def compute_raw_advantages(
+    rewards: torch.Tensor,
+    loss_mask: torch.Tensor,
+    normalize_advantages: bool = False,
+    **kwargs,
+):
+    """
+    Return raw rewards or normalized rewards.
+
+    Args:
+        rewards (torch.Tensor): Reward or score values. Shape: [num_groups, group_size]
+        loss_mask (torch.Tensor): Loss mask for valid entries. Shape: [num_groups, group_size]
+        normalize_advantages (bool): Whether to normalize advantages.
+
+    Returns:
+        torch.Tensor: advantages
+    """
+    advantages = rewards.unsqueeze(0).expand_as(loss_mask) * loss_mask
+
+    # Simple baseline subtraction (mean of valid advantages)
+    if normalize_advantages:
+        valid = advantages[loss_mask.bool()]
+        if valid.numel() > 0:
+            advantages = (advantages - valid.mean()) / (valid.std() + 1e-5)
 
     return advantages, None
