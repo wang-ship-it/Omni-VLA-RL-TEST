@@ -104,7 +104,7 @@ rollout:
   generation_backend: "huggingface"
   recompute_logprobs: True
   unnorm_key: libero_10
-  enable_offload: True
+  enable_offload: False
   pipeline_stage_num: 1
 
   model:
@@ -117,7 +117,7 @@ actor:
   micro_batch_size: 128
   global_batch_size: 256
   seed: 42
-  enable_offload: True
+  enable_offload: False
 
   model:
     model_path: "/root/data/kaelynwang/Omni_VLA/omni_vla_checkpoint_10000"

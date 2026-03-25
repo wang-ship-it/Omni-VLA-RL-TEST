@@ -770,6 +770,15 @@ def validate_embodied_cfg(cfg):
             "algorithm.loss_type='decoupled_actor_critic'. Otherwise "
             "`proximal_logprobs` will be computed but ignored by the actor loss."
         )
+        assert not bool(cfg.rollout.get("enable_offload", False)), (
+            "Async embodied PPO with rollout.recompute_logprobs=True does not support "
+            "rollout.enable_offload=True. Please set rollout.enable_offload=False."
+        )
+        assert not bool(cfg.actor.get("enable_offload", False)), (
+            "Async embodied PPO with rollout.recompute_logprobs=True does not support "
+            "actor.enable_offload=True because proximal logprob recomputation requires "
+            "actor weights to stay loaded. Please set actor.enable_offload=False."
+        )
 
     # process num-envs
     component_placement = HybridComponentPlacement(cfg, Cluster())
