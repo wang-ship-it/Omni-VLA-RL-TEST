@@ -56,6 +56,57 @@ def _align_with_returns(reference: torch.Tensor, returns: torch.Tensor) -> torch
     return None
 
 
+def _align_mask(mask: torch.Tensor | None, target: torch.Tensor) -> torch.Tensor | None:
+    if mask is None:
+        return None
+    if mask.shape == target.shape:
+        return mask.bool()
+    if (
+        mask.ndim == target.ndim
+        and mask.shape[-1] == 1
+        and mask.shape[:-1] == target.shape[:-1]
+    ):
+        return mask.expand_as(target).bool()
+    return None
+
+
+def _masked_mean(values: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor:
+    if mask is None:
+        return values.float().mean()
+    selected = values.masked_select(mask)
+    if selected.numel() == 0:
+        return values.new_tensor(0.0, dtype=torch.float32)
+    return selected.float().mean()
+
+
+def _masked_nonzero_fraction(values: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor:
+    if mask is None:
+        return (values != 0).float().mean()
+    selected = values.masked_select(mask)
+    if selected.numel() == 0:
+        return values.new_tensor(0.0, dtype=torch.float32)
+    return (selected != 0).float().mean()
+
+
+def _masked_positive_fraction(values: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor:
+    if mask is None:
+        return (values > 0).float().mean()
+    selected = values.masked_select(mask)
+    if selected.numel() == 0:
+        return values.new_tensor(0.0, dtype=torch.float32)
+    return (selected > 0).float().mean()
+
+
+def _masked_min_max(values: torch.Tensor, mask: torch.Tensor | None) -> tuple[float, float]:
+    if mask is None:
+        return _sync_min_max(values)
+    selected = values.masked_select(mask)
+    if selected.numel() == 0:
+        zero = values.new_tensor([0.0], dtype=torch.float32)
+        return _sync_min_max(zero)
+    return _sync_min_max(selected)
+
+
 def count_trajectories(metrics_dict):
     """
     Count the total number of trajectories from metrics dictionary.
@@ -121,12 +172,16 @@ def compute_evaluate_metrics(eval_metrics_list):
 
 def compute_rollout_metrics(data_buffer: dict) -> dict:
     rollout_metrics = {}
+    loss_mask = data_buffer.get("loss_mask", None)
 
     if "rewards" in data_buffer:
         rewards = data_buffer["rewards"].clone()
+        rewards_mask = _align_mask(loss_mask, rewards)
         rewards_metrics = {
-            "rewards": _sync_avg_scalar(torch.mean(rewards)),
-            "reward_nonzero_fraction": _sync_avg_scalar((rewards != 0).float().mean()),
+            "rewards": _sync_avg_scalar(_masked_mean(rewards, rewards_mask)),
+            "reward_nonzero_fraction": _sync_avg_scalar(
+                _masked_nonzero_fraction(rewards, rewards_mask)
+            ),
         }
         rollout_metrics.update(rewards_metrics)
 
@@ -140,24 +195,28 @@ def compute_rollout_metrics(data_buffer: dict) -> dict:
 
     if "advantages" in data_buffer:
         advantages = data_buffer["advantages"]
-        min_adv, max_adv = _sync_min_max(advantages)
+        advantages_mask = _align_mask(loss_mask, advantages)
+        min_adv, max_adv = _masked_min_max(advantages, advantages_mask)
 
         advantages_metrics = {
-            "advantages_mean": _sync_avg_scalar(torch.mean(advantages)),
+            "advantages_mean": _sync_avg_scalar(
+                _masked_mean(advantages, advantages_mask)
+            ),
             "advantages_max": max_adv,
             "advantages_min": min_adv,
             "advantages_positive_fraction": _sync_avg_scalar(
-                (advantages > 0).float().mean()
+                _masked_positive_fraction(advantages, advantages_mask)
             ),
         }
         rollout_metrics.update(advantages_metrics)
 
     if data_buffer.get("returns", None) is not None:
         returns = data_buffer["returns"]
-        min_ret, max_ret = _sync_min_max(returns)
+        returns_mask = _align_mask(loss_mask, returns)
+        min_ret, max_ret = _masked_min_max(returns, returns_mask)
 
         returns_metrics = {
-            "returns_mean": _sync_avg_scalar(torch.mean(returns)),
+            "returns_mean": _sync_avg_scalar(_masked_mean(returns, returns_mask)),
             "returns_max": max_ret,
             "returns_min": min_ret,
         }
@@ -167,18 +226,24 @@ def compute_rollout_metrics(data_buffer: dict) -> dict:
         if prev_values is not None:
             aligned_prev_values = _align_with_returns(prev_values, returns)
             if aligned_prev_values is not None:
+                prev_values_mask = _align_mask(loss_mask, aligned_prev_values)
+                return_value_gap = returns - aligned_prev_values
                 rollout_metrics.update(
                     {
                         "prev_values_mean": _sync_avg_scalar(
-                            torch.mean(aligned_prev_values)
+                            _masked_mean(aligned_prev_values, prev_values_mask)
                         ),
-                        "prev_values_min": _sync_min_max(aligned_prev_values)[0],
-                        "prev_values_max": _sync_min_max(aligned_prev_values)[1],
+                        "prev_values_min": _masked_min_max(
+                            aligned_prev_values, prev_values_mask
+                        )[0],
+                        "prev_values_max": _masked_min_max(
+                            aligned_prev_values, prev_values_mask
+                        )[1],
                         "return_value_gap_mean": _sync_avg_scalar(
-                            torch.mean(returns - aligned_prev_values)
+                            _masked_mean(return_value_gap, returns_mask)
                         ),
                         "return_value_gap_abs_mean": _sync_avg_scalar(
-                            torch.mean((returns - aligned_prev_values).abs())
+                            _masked_mean(return_value_gap.abs(), returns_mask)
                         ),
                     }
                 )
