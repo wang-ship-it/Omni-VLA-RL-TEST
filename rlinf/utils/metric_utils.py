@@ -25,6 +25,37 @@ def compute_split_num(num, split_num):
     return math.lcm(num, split_num) // split_num
 
 
+def _sync_avg_scalar(value: torch.Tensor) -> float:
+    value = value.float().to(Worker.torch_platform.current_device())
+    torch.distributed.all_reduce(value, op=torch.distributed.ReduceOp.AVG)
+    return value.item()
+
+
+def _sync_min_max(values: torch.Tensor) -> tuple[float, float]:
+    local_min = torch.min(values).detach().item()
+    local_max = torch.max(values).detach().item()
+    reduce_tensor = torch.as_tensor(
+        [-local_min, local_max],
+        device=Worker.torch_platform.current_device(),
+        dtype=torch.float32,
+    )
+    torch.distributed.all_reduce(reduce_tensor, op=torch.distributed.ReduceOp.MAX)
+    min_val, max_val = reduce_tensor.tolist()
+    return -min_val, max_val
+
+
+def _align_with_returns(reference: torch.Tensor, returns: torch.Tensor) -> torch.Tensor | None:
+    if reference.shape == returns.shape:
+        return reference
+    if (
+        reference.ndim == returns.ndim
+        and reference.shape[0] == returns.shape[0] + 1
+        and reference.shape[1:] == returns.shape[1:]
+    ):
+        return reference[:-1]
+    return None
+
+
 def count_trajectories(metrics_dict):
     """
     Count the total number of trajectories from metrics dictionary.
@@ -93,59 +124,76 @@ def compute_rollout_metrics(data_buffer: dict) -> dict:
 
     if "rewards" in data_buffer:
         rewards = data_buffer["rewards"].clone()
-        mean_rewards = torch.mean(rewards).to(Worker.torch_platform.current_device())
-        torch.distributed.all_reduce(mean_rewards, op=torch.distributed.ReduceOp.AVG)
-
         rewards_metrics = {
-            "rewards": mean_rewards.item(),
+            "rewards": _sync_avg_scalar(torch.mean(rewards)),
+            "reward_nonzero_fraction": _sync_avg_scalar((rewards != 0).float().mean()),
         }
         rollout_metrics.update(rewards_metrics)
 
+    if "dones" in data_buffer:
+        dones = data_buffer["dones"].float()
+        rollout_metrics.update(
+            {
+                "done_fraction": _sync_avg_scalar(dones.mean()),
+            }
+        )
+
     if "advantages" in data_buffer:
         advantages = data_buffer["advantages"]
-        mean_adv = torch.mean(advantages).to(Worker.torch_platform.current_device())
-        torch.distributed.all_reduce(mean_adv, op=torch.distributed.ReduceOp.AVG)
-        max_adv = torch.max(advantages).detach().item()
-        min_adv = torch.min(advantages).detach().item()
-        reduce_adv_tensor = torch.as_tensor(
-            [-min_adv, max_adv],
-            device=Worker.torch_platform.current_device(),
-            dtype=torch.float32,
-        )
-        torch.distributed.all_reduce(
-            reduce_adv_tensor, op=torch.distributed.ReduceOp.MAX
-        )
-        min_adv, max_adv = reduce_adv_tensor.tolist()
+        min_adv, max_adv = _sync_min_max(advantages)
 
         advantages_metrics = {
-            "advantages_mean": mean_adv.item(),
+            "advantages_mean": _sync_avg_scalar(torch.mean(advantages)),
             "advantages_max": max_adv,
-            "advantages_min": -min_adv,
+            "advantages_min": min_adv,
+            "advantages_positive_fraction": _sync_avg_scalar(
+                (advantages > 0).float().mean()
+            ),
         }
         rollout_metrics.update(advantages_metrics)
 
     if data_buffer.get("returns", None) is not None:
         returns = data_buffer["returns"]
-        mean_ret = torch.mean(returns).to(Worker.torch_platform.current_device())
-        torch.distributed.all_reduce(mean_ret, op=torch.distributed.ReduceOp.AVG)
-        max_ret = torch.max(returns).detach().item()
-        min_ret = torch.min(returns).detach().item()
-        reduce_ret_tensor = torch.as_tensor(
-            [-min_ret, max_ret],
-            device=Worker.torch_platform.current_device(),
-            dtype=torch.float32,
-        )
-        torch.distributed.all_reduce(
-            reduce_ret_tensor, op=torch.distributed.ReduceOp.MAX
-        )
-        min_ret, max_ret = reduce_ret_tensor.tolist()
+        min_ret, max_ret = _sync_min_max(returns)
 
         returns_metrics = {
-            "returns_mean": mean_ret.item(),
+            "returns_mean": _sync_avg_scalar(torch.mean(returns)),
             "returns_max": max_ret,
-            "returns_min": -min_ret,
+            "returns_min": min_ret,
         }
         rollout_metrics.update(returns_metrics)
+
+        prev_values = data_buffer.get("prev_values", None)
+        if prev_values is not None:
+            aligned_prev_values = _align_with_returns(prev_values, returns)
+            if aligned_prev_values is not None:
+                rollout_metrics.update(
+                    {
+                        "prev_values_mean": _sync_avg_scalar(
+                            torch.mean(aligned_prev_values)
+                        ),
+                        "prev_values_min": _sync_min_max(aligned_prev_values)[0],
+                        "prev_values_max": _sync_min_max(aligned_prev_values)[1],
+                        "return_value_gap_mean": _sync_avg_scalar(
+                            torch.mean(returns - aligned_prev_values)
+                        ),
+                        "return_value_gap_abs_mean": _sync_avg_scalar(
+                            torch.mean((returns - aligned_prev_values).abs())
+                        ),
+                    }
+                )
+
+        bootstrap_values = data_buffer.get("bootstrap_values", None)
+        if bootstrap_values is not None:
+            rollout_metrics.update(
+                {
+                    "bootstrap_values_mean": _sync_avg_scalar(
+                        torch.mean(bootstrap_values)
+                    ),
+                    "bootstrap_values_min": _sync_min_max(bootstrap_values)[0],
+                    "bootstrap_values_max": _sync_min_max(bootstrap_values)[1],
+                }
+            )
 
     return rollout_metrics
 

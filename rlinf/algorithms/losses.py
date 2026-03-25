@@ -21,6 +21,18 @@ from rlinf.algorithms.utils import huber_loss
 from rlinf.utils.utils import masked_mean, masked_mean_ratio
 
 
+def _masked_values(values: torch.Tensor, mask: Optional[torch.Tensor]) -> torch.Tensor:
+    if mask is None:
+        selected = values.reshape(-1)
+    else:
+        if mask.shape != values.shape:
+            mask = mask.expand_as(values)
+        selected = values.masked_select(mask)
+    if selected.numel() == 0:
+        selected = values.new_zeros(1)
+    return selected.float()
+
+
 def compute_decoupled_ppo_actor_loss(
     logprobs: torch.Tensor,
     old_logprobs: torch.Tensor,
@@ -211,6 +223,17 @@ def compute_ppo_actor_loss(
             "actor/dual_cliped_ratio": torch.tensor(0.0, device=logprobs.device),
             "actor/approx_kl": torch.tensor(0.0, device=logprobs.device),
             "actor/clip_fraction": torch.tensor(0.0, device=logprobs.device),
+            "actor/log_ratio_mean": torch.tensor(0.0, device=logprobs.device),
+            "actor/log_ratio_min": torch.tensor(0.0, device=logprobs.device),
+            "actor/log_ratio_max": torch.tensor(0.0, device=logprobs.device),
+            "actor/ratio_min": torch.tensor(0.0, device=logprobs.device),
+            "actor/ratio_max": torch.tensor(0.0, device=logprobs.device),
+            "actor/clip_lower_fraction": torch.tensor(0.0, device=logprobs.device),
+            "actor/clip_upper_fraction": torch.tensor(0.0, device=logprobs.device),
+            "actor/advantage_mean": torch.tensor(0.0, device=logprobs.device),
+            "actor/advantage_positive_fraction": torch.tensor(
+                0.0, device=logprobs.device
+            ),
         }
 
     loss_mask_ratio = None
@@ -285,6 +308,8 @@ def compute_ppo_actor_loss(
     ratio_abs_for_metrics = (ratio - 1).abs().detach()
     clipped_ratio_for_metrics = clipped_ratio.detach()
     dual_cliped_ratio_for_metrics = dual_cliped_ratio.detach()
+    log_ratio_for_metrics = log_ratio.detach()
+    advantages_for_metrics = advantages.detach()
 
     # Only broadcast when ratio has action_dim dimension and loss_mask's last dim is 1
     # This handles token_level mode: ratio [bsz, num_chunks, action_dim], loss_mask [bsz, num_chunks, 1]
@@ -292,7 +317,14 @@ def compute_ppo_actor_loss(
         # Broadcast loss_mask to match ratio's shape for metrics computation
         loss_mask_for_metrics = loss_mask.expand_as(ratio)
 
+    selected_ratio = _masked_values(ratio_for_metrics, loss_mask_for_metrics)
+    selected_log_ratio = _masked_values(log_ratio_for_metrics, loss_mask_for_metrics)
+    selected_advantages = _masked_values(advantages_for_metrics, loss_mask_for_metrics)
+
     metrics_data = {
+        "actor/token_num": torch.tensor(
+            float(loss_mask_count), device=logprobs.device, dtype=torch.float32
+        ),
         "actor/policy_loss": policy_loss.detach(),
         "actor/policy_loss_abs": metric_policy_loss_abs.detach(),
         "actor/ratio": masked_mean(ratio_for_metrics, loss_mask_for_metrics),
@@ -305,6 +337,21 @@ def compute_ppo_actor_loss(
         ),
         "actor/approx_kl": approx_kl.detach(),
         "actor/clip_fraction": clip_fraction.detach(),
+        "actor/log_ratio_mean": selected_log_ratio.mean(),
+        "actor/log_ratio_min": selected_log_ratio.min(),
+        "actor/log_ratio_max": selected_log_ratio.max(),
+        "actor/ratio_min": selected_ratio.min(),
+        "actor/ratio_max": selected_ratio.max(),
+        "actor/clip_lower_fraction": (
+            (selected_ratio < (1.0 - clip_ratio_low)).float().mean()
+        ),
+        "actor/clip_upper_fraction": (
+            (selected_ratio > (1.0 + clip_ratio_high)).float().mean()
+        ),
+        "actor/advantage_mean": selected_advantages.mean(),
+        "actor/advantage_positive_fraction": (
+            (selected_advantages > 0).float().mean()
+        ),
     }
     return policy_loss, metrics_data
 
