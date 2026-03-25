@@ -19,13 +19,19 @@ import pickle
 import signal
 from concurrent.futures import Future, ThreadPoolExecutor
 from threading import Lock
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import gymnasium as gym
 import numpy as np
 import torch
 
-from rlinf.data.lerobot_writer import LeRobotDatasetWriter
+if TYPE_CHECKING:
+    from rlinf.data.lerobot_writer import LeRobotDatasetWriter
+
+try:
+    from rlinf.data.lerobot_writer import LeRobotDatasetWriter as _LeRobotDatasetWriter
+except ModuleNotFoundError:
+    _LeRobotDatasetWriter = None
 
 _VALID_FORMATS = ("pickle", "lerobot")
 
@@ -98,7 +104,7 @@ class CollectEpisode(gym.Wrapper):
         self.finalize_interval = finalize_interval
 
         # LeRobot writer is created lazily on the first completed episode.
-        self._lerobot_writer: Optional[LeRobotDatasetWriter] = None
+        self._lerobot_writer: Optional["LeRobotDatasetWriter"] = None
         self._lerobot_lock = Lock()
         self._episodes_written = 0  # guarded by _lerobot_lock
 
@@ -426,10 +432,14 @@ class CollectEpisode(gym.Wrapper):
             "is_success": is_success,
         }
 
-    def _ensure_lerobot_writer(self, ep_data: dict) -> LeRobotDatasetWriter:
+    def _ensure_lerobot_writer(self, ep_data: dict) -> "LeRobotDatasetWriter":
         """Create the LeRobot writer on first use. Must be called inside the lock."""
         if self._lerobot_writer is None:
-            self._lerobot_writer = LeRobotDatasetWriter(
+            if _LeRobotDatasetWriter is None:
+                raise ModuleNotFoundError(
+                    "LeRobot export requires rlinf.data.lerobot_writer, but it is not available."
+                )
+            self._lerobot_writer = _LeRobotDatasetWriter(
                 root_dir=self.save_dir,
                 robot_type=self.robot_type,
                 fps=self.fps,
