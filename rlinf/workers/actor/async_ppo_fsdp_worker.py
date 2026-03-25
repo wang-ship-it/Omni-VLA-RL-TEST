@@ -106,41 +106,47 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
 
         iterator = split_dict_to_chunk(flat, num_splits)
 
-        self.model.eval()
+        prev_training_mode = self.model.training
+        self.model.train()
         proximal_logprobs_list = []
 
-        for micro_batch in iterator:
-            micro_batch = put_tensor_device(micro_batch, self.device)
-            forward_inputs = micro_batch.get("forward_inputs", None)
-            if forward_inputs is None:
-                raise ValueError(
-                    "Missing forward_inputs in compute_proximal_logprobs. "
-                    "This usually means batch splitting dropped nested dict fields."
-                )
+        try:
+            with torch.no_grad():
+                for micro_batch in iterator:
+                    micro_batch = put_tensor_device(micro_batch, self.device)
+                    forward_inputs = micro_batch.get("forward_inputs", None)
+                    if forward_inputs is None:
+                        raise ValueError(
+                            "Missing forward_inputs in compute_proximal_logprobs. "
+                            "This usually means batch splitting dropped nested dict fields."
+                        )
 
-            model_kwargs = {}
-            if SupportedModel(self.cfg.actor.model.model_type) in [
-                SupportedModel.OPENVLA,
-                SupportedModel.OPENVLA_OFT,
-            ]:
-                model_kwargs["temperature"] = (
-                    self.cfg.algorithm.sampling_params.temperature_train
-                )
-                model_kwargs["top_k"] = self.cfg.algorithm.sampling_params.top_k
-            elif (
-                SupportedModel(self.cfg.actor.model.model_type) == SupportedModel.GR00T
-            ):
-                model_kwargs["prev_logprobs"] = micro_batch["prev_logprobs"]
+                    model_kwargs = {}
+                    if SupportedModel(self.cfg.actor.model.model_type) in [
+                        SupportedModel.OPENVLA,
+                        SupportedModel.OPENVLA_OFT,
+                    ]:
+                        model_kwargs["temperature"] = (
+                            self.cfg.algorithm.sampling_params.temperature_train
+                        )
+                        model_kwargs["top_k"] = self.cfg.algorithm.sampling_params.top_k
+                    elif (
+                        SupportedModel(self.cfg.actor.model.model_type)
+                        == SupportedModel.GR00T
+                    ):
+                        model_kwargs["prev_logprobs"] = micro_batch["prev_logprobs"]
 
-            out = self.model(
-                forward_inputs=forward_inputs,
-                compute_logprobs=True,
-                compute_entropy=False,
-                compute_values=False,
-                use_cache=False,
-                **model_kwargs,
-            )
-            proximal_logprobs_list.append(out["logprobs"].cpu())
+                    out = self.model(
+                        forward_inputs=forward_inputs,
+                        compute_logprobs=True,
+                        compute_entropy=False,
+                        compute_values=False,
+                        use_cache=False,
+                        **model_kwargs,
+                    )
+                    proximal_logprobs_list.append(out["logprobs"].cpu())
+        finally:
+            self.model.train(prev_training_mode)
 
         proximal_logprobs = torch.cat(proximal_logprobs_list, dim=0).view(
             t_dim,
