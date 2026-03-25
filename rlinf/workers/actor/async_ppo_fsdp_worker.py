@@ -149,6 +149,14 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
         )
         self.rollout_batch["proximal_logprobs"] = proximal_logprobs
 
+        if self._rank == 0 and int(self.version) < 3:
+            self.logger.info(
+                "[Async PPO debug] proximal_logprobs ready: "
+                f"prev_shape={tuple(self.rollout_batch['prev_logprobs'].shape)}, "
+                f"prox_shape={tuple(proximal_logprobs.shape)}, "
+                f"loss_type={self.cfg.algorithm.loss_type}"
+            )
+
     def run_training(self) -> dict[str, Any]:
         if self.is_weight_offloaded:
             self.load_param_and_grad(self.device)
@@ -317,6 +325,29 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
                     }
 
                     loss, metrics_data = policy_loss(**loss_kwargs)
+
+                    if (
+                        self._rank == 0
+                        and int(self.version) < 3
+                        and mb_idx == 0
+                        and self.cfg.algorithm.loss_type == "decoupled_actor_critic"
+                    ):
+                        debug_keys = [
+                            "actor/proximal_ratio",
+                            "actor/proximal_approx_kl",
+                            "actor/behav_approx_kl",
+                            "actor/ratio",
+                            "actor/clip_fraction",
+                        ]
+                        debug_metrics = {
+                            key: float(metrics_data[key])
+                            for key in debug_keys
+                            if key in metrics_data
+                        }
+                        self.logger.info(
+                            "[Async PPO debug] decoupled actor metrics: "
+                            f"{debug_metrics}"
+                        )
 
                     entropy_loss = torch.tensor(0.0, device=torch.cuda.current_device())
                     if (

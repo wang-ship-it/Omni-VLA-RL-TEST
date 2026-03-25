@@ -764,6 +764,13 @@ def validate_embodied_cfg(cfg):
             f"Current value: {add_value_head}"
         )
 
+    if bool(cfg.rollout.get("recompute_logprobs", False)):
+        assert cfg.algorithm.loss_type == "decoupled_actor_critic", (
+            "Async embodied PPO with rollout.recompute_logprobs=True must use "
+            "algorithm.loss_type='decoupled_actor_critic'. Otherwise "
+            "`proximal_logprobs` will be computed but ignored by the actor loss."
+        )
+
     # process num-envs
     component_placement = HybridComponentPlacement(cfg, Cluster())
     stage_num = cfg.rollout.pipeline_stage_num
