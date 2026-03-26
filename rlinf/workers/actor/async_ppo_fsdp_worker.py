@@ -23,7 +23,13 @@ from rlinf.config import SupportedModel
 from rlinf.utils.distributed import all_reduce_dict, masked_normalization
 from rlinf.utils.metric_utils import append_to_dict, compute_rollout_metrics
 from rlinf.utils.nested_dict_process import put_tensor_device, split_dict_to_chunk
-from rlinf.utils.utils import clear_memory, masked_mean, reshape_entropy
+from rlinf.utils.utils import (
+    clear_memory,
+    cpu_weight_swap,
+    masked_mean,
+    reshape_entropy,
+    retrieve_model_state_dict_in_cpu,
+)
 from rlinf.workers.actor.fsdp_actor_worker import EmbodiedFSDPActor
 
 
@@ -59,6 +65,21 @@ def flatten_rollout_batch_for_train(
 
 class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
     """Embodied FSDP actor worker for async PPO / decoupled actor-critic training."""
+
+    def init_worker(self) -> None:
+        super().init_worker()
+        self.previous_actor_state_dict = retrieve_model_state_dict_in_cpu(
+            self.model, {}
+        )
+        self.previous_actor_offload_buffer = {}
+
+    def load_checkpoint(self, load_path: str) -> None:
+        super().load_checkpoint(load_path)
+        self.previous_actor_state_dict = retrieve_model_state_dict_in_cpu(
+            self.model, getattr(self, "previous_actor_state_dict", {})
+        )
+        if not hasattr(self, "previous_actor_offload_buffer"):
+            self.previous_actor_offload_buffer = {}
 
     def _unwrap_model_for_debug(self):
         model = self.model
@@ -107,6 +128,15 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
             "[Async PPO debug] encoder freeze status: " + ", ".join(status_parts)
         )
 
+    def _refresh_previous_actor_snapshot(self) -> None:
+        if not hasattr(self, "previous_actor_state_dict"):
+            self.previous_actor_state_dict = {}
+        self.previous_actor_state_dict = retrieve_model_state_dict_in_cpu(
+            self.model, self.previous_actor_state_dict
+        )
+        if not hasattr(self, "previous_actor_offload_buffer"):
+            self.previous_actor_offload_buffer = {}
+
     @torch.inference_mode()
     def compute_advantages_and_returns(self) -> dict[str, torch.Tensor]:
         proximal_values = self.rollout_batch.get("proximal_values", None)
@@ -142,6 +172,10 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
         assert not self.is_weight_offloaded, (
             "Weight offloading is not supported when recomputing proximal logprobs."
         )
+        assert hasattr(self, "previous_actor_state_dict"), (
+            "previous_actor_state_dict must be initialized before recomputing "
+            "proximal logprobs."
+        )
 
         t_dim = self.rollout_batch["prev_logprobs"].shape[0]
         b_dim = self.rollout_batch["prev_logprobs"].shape[1]
@@ -158,40 +192,47 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
         proximal_logprobs_list = []
 
         try:
-            with torch.no_grad():
-                for micro_batch in iterator:
-                    micro_batch = put_tensor_device(micro_batch, self.device)
-                    forward_inputs = micro_batch.get("forward_inputs", None)
-                    if forward_inputs is None:
-                        raise ValueError(
-                            "Missing forward_inputs in compute_proximal_logprobs. "
-                            "This usually means batch splitting dropped nested dict fields."
-                        )
+            with cpu_weight_swap(
+                self.model,
+                self.previous_actor_state_dict,
+                self.previous_actor_offload_buffer,
+            ):
+                with torch.no_grad():
+                    for micro_batch in iterator:
+                        micro_batch = put_tensor_device(micro_batch, self.device)
+                        forward_inputs = micro_batch.get("forward_inputs", None)
+                        if forward_inputs is None:
+                            raise ValueError(
+                                "Missing forward_inputs in compute_proximal_logprobs. "
+                                "This usually means batch splitting dropped nested dict fields."
+                            )
 
-                    model_kwargs = {}
-                    if SupportedModel(self.cfg.actor.model.model_type) in [
-                        SupportedModel.OPENVLA,
-                        SupportedModel.OPENVLA_OFT,
-                    ]:
-                        model_kwargs["temperature"] = (
-                            self.cfg.algorithm.sampling_params.temperature_train
-                        )
-                        model_kwargs["top_k"] = self.cfg.algorithm.sampling_params.top_k
-                    elif (
-                        SupportedModel(self.cfg.actor.model.model_type)
-                        == SupportedModel.GR00T
-                    ):
-                        model_kwargs["prev_logprobs"] = micro_batch["prev_logprobs"]
+                        model_kwargs = {}
+                        if SupportedModel(self.cfg.actor.model.model_type) in [
+                            SupportedModel.OPENVLA,
+                            SupportedModel.OPENVLA_OFT,
+                        ]:
+                            model_kwargs["temperature"] = (
+                                self.cfg.algorithm.sampling_params.temperature_train
+                            )
+                            model_kwargs["top_k"] = (
+                                self.cfg.algorithm.sampling_params.top_k
+                            )
+                        elif (
+                            SupportedModel(self.cfg.actor.model.model_type)
+                            == SupportedModel.GR00T
+                        ):
+                            model_kwargs["prev_logprobs"] = micro_batch["prev_logprobs"]
 
-                    out = self.model(
-                        forward_inputs=forward_inputs,
-                        compute_logprobs=True,
-                        compute_entropy=False,
-                        compute_values=False,
-                        use_cache=False,
-                        **model_kwargs,
-                    )
-                    proximal_logprobs_list.append(out["logprobs"].cpu())
+                        out = self.model(
+                            forward_inputs=forward_inputs,
+                            compute_logprobs=True,
+                            compute_entropy=False,
+                            compute_values=False,
+                            use_cache=False,
+                            **model_kwargs,
+                        )
+                        proximal_logprobs_list.append(out["logprobs"].cpu())
         finally:
             self.model.train(prev_training_mode)
 
@@ -478,6 +519,7 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
 
         self.lr_scheduler.step()
         self.optimizer.zero_grad()
+        self._refresh_previous_actor_snapshot()
         clear_memory()
 
         mean_metric_dict = {k: float(np.mean(v)) for k, v in metrics.items()}
