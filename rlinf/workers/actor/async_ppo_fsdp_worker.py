@@ -466,9 +466,12 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
                             "actor/proximal_ratio",
                             "actor/proximal_approx_kl",
                             "actor/behav_approx_kl",
+                            "actor/behav_weight_p95",
                             "actor/clip_fraction",
                             "actor/debug_logprob_prox_gap_mean",
                             "actor/debug_prox_old_gap_mean",
+                            "actor/debug_versions_min",
+                            "actor/debug_versions_max",
                         ]
                         debug_metrics = {
                             key: float(metrics_data[key])

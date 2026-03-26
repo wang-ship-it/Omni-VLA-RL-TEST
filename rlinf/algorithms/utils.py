@@ -397,23 +397,23 @@ def preprocess_loss_inputs(
             else torch.tensor(float(logprobs.numel()), device=logprobs.device)
         ),
     }
-    if raw_proximal_logprobs is not None:
-        debug_metrics["actor/debug_pre_prox_old_gap_mean"] = (
-            raw_proximal_logprobs.float() - raw_old_logprobs.float()
-        ).abs().mean()
     if proximal_logprobs is not None:
-        debug_metrics["actor/debug_post_logprob_prox_gap_mean"] = (
+        debug_metrics["actor/debug_logprob_prox_gap_mean"] = (
             logprobs.float() - proximal_logprobs.float()
         ).abs().mean()
-        debug_metrics["actor/debug_post_prox_old_gap_mean"] = (
+        debug_metrics["actor/debug_prox_old_gap_mean"] = (
             proximal_logprobs.float() - old_logprobs.float()
         ).abs().mean()
-    if raw_versions is not None:
-        debug_metrics["actor/debug_pre_versions_min"] = raw_versions.float().min()
-        debug_metrics["actor/debug_pre_versions_max"] = raw_versions.float().max()
+    elif raw_proximal_logprobs is not None:
+        debug_metrics["actor/debug_prox_old_gap_mean"] = (
+            raw_proximal_logprobs.float() - raw_old_logprobs.float()
+        ).abs().mean()
     if versions is not None:
-        debug_metrics["actor/debug_post_versions_min"] = versions.float().min()
-        debug_metrics["actor/debug_post_versions_max"] = versions.float().max()
+        debug_metrics["actor/debug_versions_min"] = versions.float().min()
+        debug_metrics["actor/debug_versions_max"] = versions.float().max()
+    elif raw_versions is not None:
+        debug_metrics["actor/debug_versions_min"] = raw_versions.float().min()
+        debug_metrics["actor/debug_versions_max"] = raw_versions.float().max()
 
     kwargs["debug_metrics"] = debug_metrics
 

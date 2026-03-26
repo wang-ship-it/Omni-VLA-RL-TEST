@@ -154,10 +154,23 @@ def compute_decoupled_ppo_actor_loss(
         masked_logprobs = _masked_values(logprobs.detach(), loss_mask)
         masked_old_logprobs = _masked_values(old_logprobs.detach(), loss_mask)
         masked_proximal_logprobs = _masked_values(proximal_logprobs.detach(), loss_mask)
+        masked_behav_weight = _masked_values(behav_weight.detach(), loss_mask)
         masked_advantages = _masked_values(advantages.detach(), loss_mask)
         masked_versions = (
             _masked_values(versions.detach(), loss_mask) if versions is not None else None
         )
+        behav_weight_mean = masked_behav_weight.mean()
+        behav_weight_max = masked_behav_weight.max()
+        behav_weight_p95 = torch.quantile(masked_behav_weight, 0.95)
+        behav_weight_gt_1_fraction = (
+            (masked_behav_weight > 1.0).float().mean()
+        )
+        behav_weight_gt_2_fraction = (
+            (masked_behav_weight > 2.0).float().mean()
+        )
+        prox_old_logprob_gap_abs_mean = (
+            masked_proximal_logprobs - masked_old_logprobs
+        ).abs().mean()
 
     metrics_data = {
         "actor/policy_loss": pg_loss.detach(),
@@ -170,6 +183,12 @@ def compute_decoupled_ppo_actor_loss(
         "actor/behav_clip_fraction": behav_clip_fraction,
         "actor/proximal_approx_kl": proximal_approx_kl,
         "actor/behav_approx_kl": behav_approx_kl,
+        "actor/behav_weight_mean": behav_weight_mean,
+        "actor/behav_weight_max": behav_weight_max,
+        "actor/behav_weight_p95": behav_weight_p95,
+        "actor/behav_weight_gt_1_fraction": behav_weight_gt_1_fraction,
+        "actor/behav_weight_gt_2_fraction": behav_weight_gt_2_fraction,
+        "actor/prox_old_logprob_gap_abs_mean": prox_old_logprob_gap_abs_mean,
     }
     if (
         versions is not None
@@ -186,6 +205,8 @@ def compute_decoupled_ppo_actor_loss(
         for key in (
             "actor/debug_logprob_prox_gap_mean",
             "actor/debug_prox_old_gap_mean",
+            "actor/debug_versions_min",
+            "actor/debug_versions_max",
         ):
             if key in debug_metrics:
                 metrics_data[key] = debug_metrics[key]
