@@ -306,6 +306,10 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
             f"per-rank batch size {per_rank_batch_size}"
         )
         num_global_batches = flattened_rollout_size // per_rank_batch_size
+        receive_stats = self.get_rollout_receive_stats()
+        receive_stats["actor/current_version_minus_batch_version_max"] = float(
+            int(self.version) + 1 - receive_stats["received_rollout_version_max"]
+        )
 
         metrics: dict[str, list] = {}
         update_epoch = int(self.cfg.algorithm.get("update_epoch", 1))
@@ -504,6 +508,8 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
                         entropy_loss.detach().item()
                     )
                     metrics_data["actor/total_loss"] = float(loss.detach().item())
+                    for key, value in receive_stats.items():
+                        metrics_data[f"actor/{key}"] = float(value)
                     append_to_dict(metrics, metrics_data)
 
                 torch.cuda.empty_cache()

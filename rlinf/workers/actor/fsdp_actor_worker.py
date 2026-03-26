@@ -1014,6 +1014,15 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
 
         self.enable_sft_co_train = cfg.actor.get("enable_sft_co_train", False)
         self.version = 0
+        self._last_rollout_receive_stats = {
+            "replay_channel_qsize_before_recv": 0.0,
+            "replay_channel_qsize_after_drain": 0.0,
+            "dropped_rollout_chunks": 0.0,
+            "dropped_rollout_batches": 0.0,
+            "received_rollout_version_min": 0.0,
+            "received_rollout_version_max": 0.0,
+            "received_rollout_version_gap": 0.0,
+        }
         if self.enable_sft_co_train:
             self._build_sft_data_loader()
 
@@ -1098,14 +1107,48 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
         recv_num = self._component_placement.get_world_size("actor")
         split_num = compute_split_num(send_num, recv_num)
 
+        qsize_before_recv = float(input_channel.qsize())
         recv_list = []
         for _ in range(split_num):
             trajectory: Trajectory = await input_channel.get(async_op=True).async_wait()
             recv_list.append(trajectory)
 
-        self.rollout_batch = convert_trajectories_to_batch(recv_list)
+        dropped_rollout_chunks = 0
+        dropped_rollout_batches = 0
+        if self.cfg.algorithm.get("drop_stale_rollout_batches", False):
+            while input_channel.qsize() >= split_num:
+                next_recv_list = []
+                for _ in range(split_num):
+                    trajectory = await input_channel.get(async_op=True).async_wait()
+                    next_recv_list.append(trajectory)
+                recv_list = next_recv_list
+                dropped_rollout_chunks += split_num
+                dropped_rollout_batches += 1
 
+        self.rollout_batch = convert_trajectories_to_batch(recv_list)
         self.rollout_batch = self._process_received_rollout_batch(self.rollout_batch)
+        versions = self.rollout_batch.get("versions", None)
+        if versions is not None:
+            version_stats = versions.float()
+            received_rollout_version_min = float(version_stats.min().item())
+            received_rollout_version_max = float(version_stats.max().item())
+        else:
+            received_rollout_version_min = 0.0
+            received_rollout_version_max = 0.0
+        self._last_rollout_receive_stats = {
+            "replay_channel_qsize_before_recv": qsize_before_recv,
+            "replay_channel_qsize_after_drain": float(input_channel.qsize()),
+            "dropped_rollout_chunks": float(dropped_rollout_chunks),
+            "dropped_rollout_batches": float(dropped_rollout_batches),
+            "received_rollout_version_min": received_rollout_version_min,
+            "received_rollout_version_max": received_rollout_version_max,
+            "received_rollout_version_gap": (
+                received_rollout_version_max - received_rollout_version_min
+            ),
+        }
+
+    def get_rollout_receive_stats(self) -> dict[str, float]:
+        return dict(self._last_rollout_receive_stats)
 
     def _process_received_rollout_batch(
         self, rollout_batch: dict[str, torch.Tensor]
