@@ -41,14 +41,14 @@ algorithm:
   group_size: 1
   reward_coef: 1.0
 
-  rollout_epoch: 1
+  rollout_epoch: 2
   eval_rollout_epoch: 1
 
   reward_type: chunk_level
   logprob_type: chunk_level
   entropy_type: token_level
 
-  update_epoch: 2
+  update_epoch: 1
   # Third-pass tuning: explicitly throttle async rollout staleness and
   # switch the main acceptance metric from proximal_* to behav_approx_kl.
   staleness_threshold: 0
