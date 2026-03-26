@@ -48,7 +48,7 @@ algorithm:
   logprob_type: chunk_level
   entropy_type: token_level
 
-  update_epoch: 1
+  update_epoch: 2
   # Third-pass tuning: explicitly throttle async rollout staleness and
   # switch the main acceptance metric from proximal_* to behav_approx_kl.
   staleness_threshold: 0
@@ -146,7 +146,7 @@ actor:
     adam_beta2: 0.95
     adam_eps: 1.0e-08
     weight_decay: 0.01
-    clip_grad: 0.5
+    clip_grad: 1.0
     critic_warmup_steps: 0
 
   fsdp_config:
