@@ -58,6 +58,7 @@ algorithm:
   adv_type: gae
   loss_type: decoupled_actor_critic
   loss_agg_func: "token-mean"
+  proximal_recompute_model_mode: eval
   kl_beta: 0
   # First-pass tuning: reduce exploration noise after stabilizing rollout freshness.
   entropy_bonus: 0.0005

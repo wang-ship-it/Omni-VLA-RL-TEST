@@ -188,7 +188,18 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
         iterator = split_dict_to_chunk(flat, num_splits)
 
         prev_training_mode = self.model.training
-        self.model.train()
+        recompute_mode = str(
+            self.cfg.algorithm.get("proximal_recompute_model_mode", "train")
+        ).lower()
+        if recompute_mode == "train":
+            self.model.train()
+        elif recompute_mode == "eval":
+            self.model.eval()
+        else:
+            raise ValueError(
+                "algorithm.proximal_recompute_model_mode must be one of "
+                "{'train', 'eval'}"
+            )
         proximal_logprobs_list = []
 
         try:
@@ -250,6 +261,7 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
                 "[Async PPO debug] proximal_logprobs ready: "
                 f"prev_shape={tuple(self.rollout_batch['prev_logprobs'].shape)}, "
                 f"prox_shape={tuple(proximal_logprobs.shape)}, "
+                f"recompute_mode={recompute_mode}, "
                 f"loss_type={self.cfg.algorithm.loss_type}, "
                 f"prox_mean={prox_stats.mean().item():.6f}, "
                 f"prox_std={prox_stats.std(unbiased=False).item():.6f}, "
