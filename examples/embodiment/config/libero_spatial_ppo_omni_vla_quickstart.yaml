@@ -86,7 +86,8 @@ env:
 
   train:
     # Reduce async policy lag by shrinking the amount of stale rollout data.
-    total_num_envs: 16
+    # Second-pass tuning: push rollout freshness harder to lower behavior lag.
+    total_num_envs: 8
     max_episode_steps: 240
     max_steps_per_rollout_epoch: 240
   eval:
@@ -116,8 +117,8 @@ rollout:
 actor:
   group_name: "ActorGroup"
   training_backend: "fsdp"
-  micro_batch_size: 128
-  global_batch_size: 384
+  micro_batch_size: 256
+  global_batch_size: 512
   seed: 42
   enable_offload: False
 
