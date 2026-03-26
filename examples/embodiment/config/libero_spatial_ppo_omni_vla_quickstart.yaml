@@ -140,7 +140,7 @@ actor:
       detach_critic_input: True
 
   optim:
-    lr: 2.5e-7
+    lr: 1.25e-7
     value_lr: 2.0e-5
     adam_beta1: 0.9
     adam_beta2: 0.95
