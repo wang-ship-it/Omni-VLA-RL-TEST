@@ -49,6 +49,7 @@ def compute_decoupled_ppo_actor_loss(
     loss_mask_sum: Optional[torch.Tensor] = None,
     critic_warmup: Optional[bool] = False,
     behave_weight_threshold: Optional[float] = None,
+    debug_metrics: Optional[dict] = None,
     **kwargs,
 ) -> tuple[torch.Tensor, dict]:
     """Compute actor loss for decoupled PPO with optional proximal policy anchor."""
@@ -150,6 +151,14 @@ def compute_decoupled_ppo_actor_loss(
         )
         behav_clip_fraction = 1.0 - (behav_mask_count / loss_mask_count)
 
+        masked_logprobs = _masked_values(logprobs.detach(), loss_mask)
+        masked_old_logprobs = _masked_values(old_logprobs.detach(), loss_mask)
+        masked_proximal_logprobs = _masked_values(proximal_logprobs.detach(), loss_mask)
+        masked_advantages = _masked_values(advantages.detach(), loss_mask)
+        masked_versions = (
+            _masked_values(versions.detach(), loss_mask) if versions is not None else None
+        )
+
     metrics_data = {
         "actor/policy_loss": pg_loss.detach(),
         "actor/proximal_ratio": masked_mean(proximal_ratio.detach(), loss_mask),
@@ -161,6 +170,20 @@ def compute_decoupled_ppo_actor_loss(
         "actor/behav_clip_fraction": behav_clip_fraction,
         "actor/proximal_approx_kl": proximal_approx_kl,
         "actor/behav_approx_kl": behav_approx_kl,
+        "actor/debug_logprob_prox_gap_mean": (
+            masked_logprobs - masked_proximal_logprobs
+        ).abs().mean(),
+        "actor/debug_prox_old_gap_mean": (
+            masked_proximal_logprobs - masked_old_logprobs
+        ).abs().mean(),
+        "actor/debug_loss_mask_count": torch.tensor(
+            float(loss_mask_count), device=logprobs.device
+        ),
+        "actor/debug_behav_mask_count": torch.tensor(
+            float(behav_mask_count), device=logprobs.device
+        ),
+        "actor/debug_advantages_mean": masked_advantages.mean(),
+        "actor/debug_advantages_std": masked_advantages.std(unbiased=False),
     }
     if (
         versions is not None
@@ -172,6 +195,12 @@ def compute_decoupled_ppo_actor_loss(
         metrics_data["actor/current_version"] = torch.tensor(
             float(current_version), device=logprobs.device
         )
+        if masked_versions is not None:
+            metrics_data["actor/debug_versions_min"] = masked_versions.min()
+            metrics_data["actor/debug_versions_max"] = masked_versions.max()
+
+    if debug_metrics is not None:
+        metrics_data.update(debug_metrics)
 
     return pg_loss, metrics_data
 

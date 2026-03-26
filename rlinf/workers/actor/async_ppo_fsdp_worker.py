@@ -60,6 +60,53 @@ def flatten_rollout_batch_for_train(
 class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
     """Embodied FSDP actor worker for async PPO / decoupled actor-critic training."""
 
+    def _unwrap_model_for_debug(self):
+        model = self.model
+        while hasattr(model, "module"):
+            model = model.module
+        return model
+
+    def _log_encoder_freeze_status(self) -> None:
+        if not (self._rank == 0 and int(self.version) < 3):
+            return
+
+        model = self._unwrap_model_for_debug()
+        reasoning_spatial_expert = getattr(model, "reasoning_spatial_expert", None)
+        if reasoning_spatial_expert is None:
+            self.logger.info(
+                "[Async PPO debug] encoder freeze status unavailable: "
+                "missing reasoning_spatial_expert on actor model"
+            )
+            return
+
+        modules = {
+            "vggt_encoder": getattr(reasoning_spatial_expert, "vggt_encoder", None),
+            "vision_tower": getattr(
+                getattr(reasoning_spatial_expert, "reasoning_expert", None),
+                "vision_tower",
+                None,
+            ),
+        }
+
+        status_parts = []
+        for name, module in modules.items():
+            if module is None:
+                status_parts.append(f"{name}=missing")
+                continue
+
+            params = list(module.parameters())
+            total_params = sum(p.numel() for p in params)
+            trainable_params = sum(p.numel() for p in params if p.requires_grad)
+            frozen = trainable_params == 0
+            status_parts.append(
+                f"{name}(training={module.training}, frozen={frozen}, "
+                f"trainable_params={trainable_params}, total_params={total_params})"
+            )
+
+        self.logger.info(
+            "[Async PPO debug] encoder freeze status: " + ", ".join(status_parts)
+        )
+
     @torch.inference_mode()
     def compute_advantages_and_returns(self) -> dict[str, torch.Tensor]:
         proximal_values = self.rollout_batch.get("proximal_values", None)
@@ -156,11 +203,18 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
         self.rollout_batch["proximal_logprobs"] = proximal_logprobs
 
         if self._rank == 0 and int(self.version) < 3:
+            prox_stats = proximal_logprobs.float()
+            prev_stats = self.rollout_batch["prev_logprobs"].float()
             self.logger.info(
                 "[Async PPO debug] proximal_logprobs ready: "
                 f"prev_shape={tuple(self.rollout_batch['prev_logprobs'].shape)}, "
                 f"prox_shape={tuple(proximal_logprobs.shape)}, "
-                f"loss_type={self.cfg.algorithm.loss_type}"
+                f"loss_type={self.cfg.algorithm.loss_type}, "
+                f"prox_mean={prox_stats.mean().item():.6f}, "
+                f"prox_std={prox_stats.std(unbiased=False).item():.6f}, "
+                f"prev_mean={prev_stats.mean().item():.6f}, "
+                f"prev_std={prev_stats.std(unbiased=False).item():.6f}, "
+                f"prox_prev_gap={torch.mean(torch.abs(prox_stats - prev_stats)).item():.6f}"
             )
 
     def run_training(self) -> dict[str, Any]:
@@ -168,6 +222,8 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
             self.load_param_and_grad(self.device)
         if self.is_optimizer_offloaded:
             self.load_optimizer(self.device)
+
+        self._log_encoder_freeze_status()
 
         t_dim = int(self.rollout_batch["prev_logprobs"].shape[0])
         b_dim = int(self.rollout_batch["prev_logprobs"].shape[1])
@@ -338,21 +394,50 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
                         and mb_idx == 0
                         and self.cfg.algorithm.loss_type == "decoupled_actor_critic"
                     ):
+                        prox_gap = None
+                        if proximal_logprobs is not None:
+                            prox_gap = torch.mean(
+                                torch.abs(out["logprobs"].float() - proximal_logprobs.float())
+                            ).item()
+                        old_gap = torch.mean(
+                            torch.abs(out["logprobs"].float() - old_logprobs.float())
+                        ).item()
+                        adv_stats = advantages.float()
+                        loss_mask_count = (
+                            int(loss_mask.count_nonzero().item())
+                            if loss_mask is not None
+                            else int(out["logprobs"].numel())
+                        )
                         debug_keys = [
                             "actor/proximal_ratio",
                             "actor/proximal_approx_kl",
                             "actor/behav_approx_kl",
-                            "actor/ratio",
                             "actor/clip_fraction",
+                            "actor/debug_post_logprob_prox_gap_mean",
+                            "actor/debug_logprob_prox_gap_mean",
+                            "actor/debug_prox_old_gap_mean",
+                            "actor/debug_loss_mask_count",
+                            "actor/debug_behav_mask_count",
                         ]
                         debug_metrics = {
                             key: float(metrics_data[key])
                             for key in debug_keys
                             if key in metrics_data
                         }
+                        prox_gap_msg = (
+                            f"{prox_gap:.6f}" if prox_gap is not None else "None"
+                        )
                         self.logger.info(
                             "[Async PPO debug] decoupled actor metrics: "
-                            f"{debug_metrics}"
+                            f"{debug_metrics}, "
+                            f"pre_loss_logprob_old_gap={old_gap:.6f}, "
+                            f"pre_loss_logprob_prox_gap={prox_gap_msg}"
+                        )
+                        self.logger.info(
+                            "[Async PPO debug] decoupled actor inputs: "
+                            f"advantages_mean={adv_stats.mean().item():.6f}, "
+                            f"advantages_std={adv_stats.std(unbiased=False).item():.6f}, "
+                            f"loss_mask_count={loss_mask_count}"
                         )
 
                     entropy_loss = torch.tensor(0.0, device=torch.cuda.current_device())

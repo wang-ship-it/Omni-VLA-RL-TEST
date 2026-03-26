@@ -300,6 +300,12 @@ def preprocess_loss_inputs(
     versions: Optional[torch.Tensor] = None,
     **kwargs,
 ) -> dict:
+    raw_logprobs = logprobs
+    raw_old_logprobs = old_logprobs
+    raw_proximal_logprobs = kwargs.get("proximal_logprobs", None)
+    raw_versions = versions
+    raw_loss_mask = loss_mask
+
     if reward_type == "chunk_level":
         advantages = advantages.flatten()
         if loss_mask is not None:
@@ -314,7 +320,7 @@ def preprocess_loss_inputs(
             returns = returns.flatten()
 
     bsz = logprobs.shape[0]
-    proximal_logprobs = kwargs.get("proximal_logprobs", None)
+    proximal_logprobs = raw_proximal_logprobs
     if logprob_type == "token_level":
         # logprobs, old_logprobs: [bsz, num_action_chunks, action_dim] -> [bsz, num_action_chunks, action_dim]
         logprobs = logprobs.reshape(bsz, -1, single_action_dim)
@@ -374,6 +380,42 @@ def preprocess_loss_inputs(
             "returns": returns,
         }
     )
+
+    debug_metrics = {
+        "actor/debug_pre_logprobs_mean": raw_logprobs.float().mean(),
+        "actor/debug_pre_old_logprobs_mean": raw_old_logprobs.float().mean(),
+        "actor/debug_pre_loss_mask_true_count": (
+            raw_loss_mask.count_nonzero().float()
+            if raw_loss_mask is not None
+            else torch.tensor(float(raw_logprobs.numel()), device=raw_logprobs.device)
+        ),
+        "actor/debug_post_logprobs_mean": logprobs.float().mean(),
+        "actor/debug_post_old_logprobs_mean": old_logprobs.float().mean(),
+        "actor/debug_post_loss_mask_true_count": (
+            loss_mask.count_nonzero().float()
+            if loss_mask is not None
+            else torch.tensor(float(logprobs.numel()), device=logprobs.device)
+        ),
+    }
+    if raw_proximal_logprobs is not None:
+        debug_metrics["actor/debug_pre_prox_old_gap_mean"] = (
+            raw_proximal_logprobs.float() - raw_old_logprobs.float()
+        ).abs().mean()
+    if proximal_logprobs is not None:
+        debug_metrics["actor/debug_post_logprob_prox_gap_mean"] = (
+            logprobs.float() - proximal_logprobs.float()
+        ).abs().mean()
+        debug_metrics["actor/debug_post_prox_old_gap_mean"] = (
+            proximal_logprobs.float() - old_logprobs.float()
+        ).abs().mean()
+    if raw_versions is not None:
+        debug_metrics["actor/debug_pre_versions_min"] = raw_versions.float().min()
+        debug_metrics["actor/debug_pre_versions_max"] = raw_versions.float().max()
+    if versions is not None:
+        debug_metrics["actor/debug_post_versions_min"] = versions.float().min()
+        debug_metrics["actor/debug_post_versions_max"] = versions.float().max()
+
+    kwargs["debug_metrics"] = debug_metrics
 
     return kwargs
 
