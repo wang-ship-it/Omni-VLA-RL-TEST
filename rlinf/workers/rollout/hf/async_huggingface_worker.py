@@ -80,8 +80,14 @@ class AsyncMultiStepRolloutWorker(MultiStepRolloutWorker):
             rollout_metrics = {
                 f"time/rollout/{k}": v for k, v in rollout_metrics.items()
             }
+            sync_metrics = self.get_weight_sync_metrics()
+            sync_metrics.update(
+                {
+                    "weight_sync_apply_total": float(self._weight_sync_apply_total),
+                }
+            )
             metric_channel.put(
-                {"rank": self._rank, "time": rollout_metrics},
+                {"rank": self._rank, "time": rollout_metrics, "rollout": sync_metrics},
                 async_op=True,
             )
 
@@ -117,6 +123,7 @@ class AsyncMultiStepRolloutWorker(MultiStepRolloutWorker):
             return
 
         self._weight_sync_requested = False
+        self.requested_weight_version = float(self.version)
         self._weight_sync_work = self.recv(
             self.actor_group_name,
             src_rank=self.actor_weight_src_rank,
@@ -124,8 +131,11 @@ class AsyncMultiStepRolloutWorker(MultiStepRolloutWorker):
             options=self._sync_weight_comm_options,
         )
 
-    def _apply_synced_model_weights(self, param_state_dict):
+    def _apply_synced_model_weights(self, sync_payload):
+        param_state_dict, weight_version = self._unpack_weight_sync_payload(sync_payload)
         self.hf_model.load_state_dict(param_state_dict)
+        self.applied_weight_version = weight_version
+        self.requested_weight_version = weight_version
 
         del param_state_dict
         gc.collect()
@@ -139,9 +149,9 @@ class AsyncMultiStepRolloutWorker(MultiStepRolloutWorker):
         if not self._weight_sync_work.done():
             return
 
-        param_state_dict = await self._weight_sync_work.async_wait()
+        sync_payload = await self._weight_sync_work.async_wait()
         self._weight_sync_work = None
-        self._apply_synced_model_weights(param_state_dict)
+        self._apply_synced_model_weights(sync_payload)
         self._weight_sync_apply_total += 1
 
         self._start_background_weight_sync_if_needed()

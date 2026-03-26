@@ -170,20 +170,6 @@ def compute_decoupled_ppo_actor_loss(
         "actor/behav_clip_fraction": behav_clip_fraction,
         "actor/proximal_approx_kl": proximal_approx_kl,
         "actor/behav_approx_kl": behav_approx_kl,
-        "actor/debug_logprob_prox_gap_mean": (
-            masked_logprobs - masked_proximal_logprobs
-        ).abs().mean(),
-        "actor/debug_prox_old_gap_mean": (
-            masked_proximal_logprobs - masked_old_logprobs
-        ).abs().mean(),
-        "actor/debug_loss_mask_count": torch.tensor(
-            float(loss_mask_count), device=logprobs.device
-        ),
-        "actor/debug_behav_mask_count": torch.tensor(
-            float(behav_mask_count), device=logprobs.device
-        ),
-        "actor/debug_advantages_mean": masked_advantages.mean(),
-        "actor/debug_advantages_std": masked_advantages.std(unbiased=False),
     }
     if (
         versions is not None
@@ -195,12 +181,14 @@ def compute_decoupled_ppo_actor_loss(
         metrics_data["actor/current_version"] = torch.tensor(
             float(current_version), device=logprobs.device
         )
-        if masked_versions is not None:
-            metrics_data["actor/debug_versions_min"] = masked_versions.min()
-            metrics_data["actor/debug_versions_max"] = masked_versions.max()
 
     if debug_metrics is not None:
-        metrics_data.update(debug_metrics)
+        for key in (
+            "actor/debug_logprob_prox_gap_mean",
+            "actor/debug_prox_old_gap_mean",
+        ):
+            if key in debug_metrics:
+                metrics_data[key] = debug_metrics[key]
 
     return pg_loss, metrics_data
 

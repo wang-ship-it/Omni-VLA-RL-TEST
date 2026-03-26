@@ -307,9 +307,18 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
         )
         num_global_batches = flattened_rollout_size // per_rank_batch_size
         receive_stats = self.get_rollout_receive_stats()
-        receive_stats["actor/current_version_minus_batch_version_max"] = float(
+        tracked_receive_stats = {
+            "replay_channel_qsize_before_recv": receive_stats[
+                "replay_channel_qsize_before_recv"
+            ],
+            "replay_channel_qsize_after_drain": receive_stats[
+                "replay_channel_qsize_after_drain"
+            ],
+            "dropped_rollout_batches": receive_stats["dropped_rollout_batches"],
+            "current_version_minus_batch_version_max": float(
             int(self.version) + 1 - receive_stats["received_rollout_version_max"]
-        )
+            ),
+        }
 
         metrics: dict[str, list] = {}
         update_epoch = int(self.cfg.algorithm.get("update_epoch", 1))
@@ -458,11 +467,8 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
                             "actor/proximal_approx_kl",
                             "actor/behav_approx_kl",
                             "actor/clip_fraction",
-                            "actor/debug_post_logprob_prox_gap_mean",
                             "actor/debug_logprob_prox_gap_mean",
                             "actor/debug_prox_old_gap_mean",
-                            "actor/debug_loss_mask_count",
-                            "actor/debug_behav_mask_count",
                         ]
                         debug_metrics = {
                             key: float(metrics_data[key])
@@ -508,7 +514,7 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
                         entropy_loss.detach().item()
                     )
                     metrics_data["actor/total_loss"] = float(loss.detach().item())
-                    for key, value in receive_stats.items():
+                    for key, value in tracked_receive_stats.items():
                         metrics_data[f"actor/{key}"] = float(value)
                     append_to_dict(metrics, metrics_data)
 

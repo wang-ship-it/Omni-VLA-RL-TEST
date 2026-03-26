@@ -56,7 +56,7 @@ class AsyncPPOEmbodiedRunner(EmbodiedRunner):
                 "Validation check interval is set to a positive value, but validation is not implemented for AsyncPPOEmbodiedRunner, so validation will be skipped."
             )
 
-    def get_rollout_metrics(self) -> tuple[dict, list[dict]]:
+    def get_rollout_metrics(self) -> tuple[dict, list[dict], dict, list[dict]]:
         results: list[dict] = []
         while True:
             try:
@@ -66,12 +66,20 @@ class AsyncPPOEmbodiedRunner(EmbodiedRunner):
                 break
 
         if not results:
-            return {}, []
+            return {}, [], {}, []
 
         time_metrics, ranked_time_metrics_list = self._process_ranked_numeric_results(
             results, metric_field="time"
         )
-        return time_metrics, ranked_time_metrics_list
+        rollout_metrics, ranked_rollout_metrics_list = (
+            self._process_ranked_numeric_results(results, metric_field="rollout")
+        )
+        return (
+            time_metrics,
+            ranked_time_metrics_list,
+            rollout_metrics,
+            ranked_rollout_metrics_list,
+        )
 
     def get_env_metrics(self) -> tuple[dict, list[dict], list[dict]]:
         results: list[dict] = []
@@ -174,7 +182,12 @@ class AsyncPPOEmbodiedRunner(EmbodiedRunner):
             env_metrics, env_time_metrics_per_rank, env_metrics_per_rank = (
                 self.get_env_metrics()
             )
-            rollout_time_metrics, rollout_time_metrics_per_rank = (
+            (
+                rollout_time_metrics,
+                rollout_time_metrics_per_rank,
+                rollout_worker_metrics,
+                rollout_worker_metrics_per_rank,
+            ) = (
                 self.get_rollout_metrics()
             )
             self.metric_logger.log(train_metrics, self.global_step)
@@ -182,6 +195,11 @@ class AsyncPPOEmbodiedRunner(EmbodiedRunner):
                 self.metric_logger.log(env_metrics, self.global_step)
             if rollout_time_metrics:
                 self.metric_logger.log(rollout_time_metrics, self.global_step)
+            if rollout_worker_metrics:
+                rollout_worker_metrics = {
+                    f"rollout/{k}": v for k, v in rollout_worker_metrics.items()
+                }
+                self.metric_logger.log(rollout_worker_metrics, self.global_step)
             self.metric_logger.log(rollout_metrics, self.global_step)
             self.metric_logger.log(time_metrics, self.global_step)
             self._log_ranked_metrics(
@@ -223,8 +241,16 @@ class AsyncPPOEmbodiedRunner(EmbodiedRunner):
                 worker_group_name=self.rollout.worker_group_name,
                 add_prefix=False,
             )
+            self._log_ranked_metrics(
+                metrics_list=rollout_worker_metrics_per_rank,
+                step=self.global_step,
+                prefix="rollout",
+                worker_group_name=self.rollout.worker_group_name,
+            )
 
             logging_metrics = {**time_metrics, **train_metrics, **rollout_metrics}
+            if rollout_worker_metrics:
+                logging_metrics.update(rollout_worker_metrics)
             if env_metrics:
                 logging_metrics.update(env_metrics)
 
