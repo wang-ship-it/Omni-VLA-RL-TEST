@@ -131,11 +131,10 @@ class AsyncMultiStepRolloutWorker(MultiStepRolloutWorker):
             options=self._sync_weight_comm_options,
         )
 
-    def _apply_synced_model_weights(self, sync_payload):
-        param_state_dict, weight_version = self._unpack_weight_sync_payload(sync_payload)
+    def _apply_synced_model_weights(self, param_state_dict):
         self.hf_model.load_state_dict(param_state_dict)
-        self.applied_weight_version = weight_version
-        self.requested_weight_version = weight_version
+        self.applied_weight_version = int(self.version)
+        self.requested_weight_version = float(self.version)
 
         del param_state_dict
         gc.collect()
@@ -149,9 +148,9 @@ class AsyncMultiStepRolloutWorker(MultiStepRolloutWorker):
         if not self._weight_sync_work.done():
             return
 
-        sync_payload = await self._weight_sync_work.async_wait()
+        param_state_dict = await self._weight_sync_work.async_wait()
         self._weight_sync_work = None
-        self._apply_synced_model_weights(sync_payload)
+        self._apply_synced_model_weights(param_state_dict)
         self._weight_sync_apply_total += 1
 
         self._start_background_weight_sync_if_needed()

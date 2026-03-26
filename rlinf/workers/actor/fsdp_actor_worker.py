@@ -1078,15 +1078,11 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
             self.load_param_and_grad(self.device)
 
         state_dict = self.get_model_state_dict(cpu_offload=False, full_state_dict=True)
-        sync_payload = {
-            "state_dict": state_dict,
-            "weight_version": int(self.version),
-        }
         handles = []
         for rank in self._weight_dst_rank_in_rollout:
             handles.append(
                 self.send(
-                    sync_payload,
+                    state_dict,
                     self._rollout_group_name,
                     rank,
                     async_op=True,

@@ -338,28 +338,22 @@ class MultiStepRolloutWorker(Worker):
 
     async def sync_model_from_actor(self):
         """Sync model parameters from the actor worker."""
-        sync_payload = await self.recv(
+        param_state_dict = await self.recv(
             self.actor_group_name,
             src_rank=self.actor_weight_src_rank,
             async_op=True,
             options=self._sync_weight_comm_options,
         ).async_wait()
-        param_state_dict, weight_version = self._unpack_weight_sync_payload(sync_payload)
         self.hf_model.load_state_dict(param_state_dict)
-        self.applied_weight_version = weight_version
-        self.requested_weight_version = weight_version
+        # In the current runner order, rollout.set_global_step(step) is called
+        # immediately before syncing weights for that same logical step. Record the
+        # applied version only after load_state_dict has actually completed.
+        self.applied_weight_version = int(self.version)
+        self.requested_weight_version = float(self.version)
 
         del param_state_dict
         gc.collect()
         self.torch_platform.empty_cache()
-
-    def _unpack_weight_sync_payload(
-        self, sync_payload: Any
-    ) -> tuple[dict[str, torch.Tensor], int]:
-        if isinstance(sync_payload, dict) and "state_dict" in sync_payload:
-            weight_version = int(sync_payload.get("weight_version", self.version))
-            return sync_payload["state_dict"], weight_version
-        return sync_payload, int(self.version)
 
     def get_weight_sync_metrics(self) -> dict[str, float]:
         return {
