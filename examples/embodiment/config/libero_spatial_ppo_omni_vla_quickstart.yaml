@@ -75,7 +75,7 @@ algorithm:
   rewards_upper_bound: 0.9
   sampling_params:
     do_sample: True
-    temperature_train: 0.6
+    temperature_train: 0.5
     temperature_eval: 0.6
     top_k: 50
     top_p: 1.0
