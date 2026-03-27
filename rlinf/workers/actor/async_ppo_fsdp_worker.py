@@ -188,13 +188,24 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
         iterator = split_dict_to_chunk(flat, num_splits)
 
         prev_training_mode = self.model.training
+        model_type = SupportedModel(self.cfg.actor.model.model_type)
         recompute_mode = str(
             self.cfg.algorithm.get("proximal_recompute_model_mode", "train")
         ).lower()
+        omni_semantic_overrides: dict[str, bool] = {}
         if recompute_mode == "train":
             self.model.train()
         elif recompute_mode == "eval":
-            self.model.eval()
+            if model_type == SupportedModel.OMNI_VLA:
+                # Keep the global module in train mode so activation-memory paths remain valid,
+                # while explicitly overriding the Omni-VLA behavior semantics to mimic rollout.
+                self.model.train()
+                omni_semantic_overrides = {
+                    "prefix_middle_no_grad_override": False,
+                    "clone_past_key_values_override": True,
+                }
+            else:
+                self.model.eval()
         else:
             raise ValueError(
                 "algorithm.proximal_recompute_model_mode must be one of "
@@ -241,6 +252,7 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
                             compute_entropy=False,
                             compute_values=False,
                             use_cache=False,
+                            **omni_semantic_overrides,
                             **model_kwargs,
                         )
                         proximal_logprobs_list.append(out["logprobs"].cpu())
@@ -411,6 +423,9 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
                             compute_entropy=(self.cfg.algorithm.entropy_bonus > 0),
                             compute_values=compute_values,
                             use_cache=False,
+                            debug_train_rollout_semantics_gap=self.cfg.algorithm.get(
+                                "debug_train_rollout_semantics_gap", False
+                            ),
                             **model_kwargs,
                         )
 
@@ -453,6 +468,9 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
                     }
 
                     loss, metrics_data = policy_loss(**loss_kwargs)
+                    debug_metrics = out.get("debug_metrics", None)
+                    if debug_metrics:
+                        metrics_data.update(debug_metrics)
 
                     if (
                         self._rank == 0

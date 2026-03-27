@@ -259,6 +259,25 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
         else:
             raise NotImplementedError
 
+    def _resolve_omni_vla_semantics(
+        self,
+        *,
+        prefix_middle_no_grad_override=None,
+        clone_past_key_values_override=None,
+    ) -> tuple[bool, bool]:
+        """Resolve behavior-semantics switches without relying only on self.training."""
+        prefix_middle_no_grad = (
+            self.training
+            if prefix_middle_no_grad_override is None
+            else bool(prefix_middle_no_grad_override)
+        )
+        clone_past_key_values = (
+            (not self.training)
+            if clone_past_key_values_override is None
+            else bool(clone_past_key_values_override)
+        )
+        return prefix_middle_no_grad, clone_past_key_values
+
     def sft_forward(self, data, **kwargs):
         observation = data["observation"]
         actions = data["actions"]
@@ -271,6 +290,15 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
     ) -> dict[str, Any]:
         # get kwargs
         compute_values = kwargs.get("compute_values", False)
+        prefix_middle_no_grad_override = kwargs.get(
+            "prefix_middle_no_grad_override", None
+        )
+        clone_past_key_values_override = kwargs.get(
+            "clone_past_key_values_override", None
+        )
+        debug_train_rollout_semantics_gap = bool(
+            kwargs.get("debug_train_rollout_semantics_gap", False)
+        )
         chains = forward_inputs["chains"]
         denoise_inds = forward_inputs["denoise_inds"]
         # input transform
@@ -294,6 +322,8 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
             chains,
             denoise_inds,
             compute_values,
+            prefix_middle_no_grad_override=prefix_middle_no_grad_override,
+            clone_past_key_values_override=clone_past_key_values_override,
         )
         log_probs = log_probs[
             :, :, : self.config.action_chunk, : self.config.action_env_dim
@@ -307,11 +337,35 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
             :, None
         ]  # [:,None] to align with loss-mask shape
         value_t = value_t.mean(dim=-1, keepdim=True)
-        return {
+        output_dict = {
             "logprobs": log_probs,
             "values": value_t,
             "entropy": entropy,
         }
+        if debug_train_rollout_semantics_gap:
+            with torch.no_grad():
+                rollout_semantic_log_probs, _, _ = self.get_log_prob_value(
+                    images,
+                    img_masks,
+                    lang_tokens,
+                    lang_masks,
+                    state,
+                    chains,
+                    denoise_inds,
+                    False,
+                    prefix_middle_no_grad_override=False,
+                    clone_past_key_values_override=True,
+                )
+                rollout_semantic_log_probs = rollout_semantic_log_probs[
+                    :, :, : self.config.action_chunk, : self.config.action_env_dim
+                ].mean(dim=1)
+                semantic_gap = log_probs.detach().float() - rollout_semantic_log_probs.float()
+                output_dict["debug_metrics"] = {
+                    "actor/debug_train_rollout_logprob_gap_mean": semantic_gap.mean(),
+                    "actor/debug_train_rollout_logprob_gap_abs_mean": semantic_gap.abs().mean(),
+                    "actor/debug_train_rollout_logprob_gap_max": semantic_gap.abs().max(),
+                }
+        return output_dict
 
     def obs_processor(self, env_obs):
         # base observation
@@ -601,7 +655,8 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
         denoise_steps,
         compute_values=True,
         middle_pad_masks=None,
-        max_position_ids=None
+        max_position_ids=None,
+        clone_past_key_values_override=None,
     ):
         bsize = state.shape[0]
         device = state.device
@@ -655,7 +710,10 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
         
         if past_key_values is not None:
             cached_seq_len = past_key_values.get_seq_length()
-            if self.training:
+            _, clone_past_key_values = self._resolve_omni_vla_semantics(
+                clone_past_key_values_override=clone_past_key_values_override
+            )
+            if not clone_past_key_values:
                 past_key_values_for_suffix = past_key_values
             else:
                 from transformers.cache_utils import DynamicCache
@@ -766,9 +824,14 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
         chains,
         denoise_inds,
         compute_values=False,
+        prefix_middle_no_grad_override=None,
+        clone_past_key_values_override=None,
     ):
         bsize = state.shape[0]
-        prefix_middle_no_grad = self.training
+        prefix_middle_no_grad, _ = self._resolve_omni_vla_semantics(
+            prefix_middle_no_grad_override=prefix_middle_no_grad_override,
+            clone_past_key_values_override=clone_past_key_values_override,
+        )
 
         # 1. Prefix
         if prefix_middle_no_grad:
@@ -890,7 +953,8 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
                 self.config.num_steps,
                 compute_values,
                 middle_pad_masks=middle_pad_masks,
-                max_position_ids=max_position_ids
+                max_position_ids=max_position_ids,
+                clone_past_key_values_override=clone_past_key_values_override,
             )
             log_probs = self.get_logprob_norm(chains_next, x_t_mean, x_t_std)
             entropy = self.gaussian_entropy(x_t_std)
