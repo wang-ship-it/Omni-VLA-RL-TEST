@@ -59,6 +59,14 @@ algorithm:
   loss_type: decoupled_actor_critic
   loss_agg_func: "token-mean"
   proximal_recompute_model_mode: train
+  debug_chain_trace: False
+  debug_chain_trace_mode: anomaly
+  debug_chain_trace_topk: 3
+  debug_chain_trace_rank0_only: True
+  debug_chain_trace_thresholds:
+    behav_approx_kl: 20.0
+    prox_old_gap_abs_mean: 20.0
+    train_rollout_gap_abs_mean: 0.5
   kl_beta: 0
   # First-pass tuning: reduce exploration noise after stabilizing rollout freshness.
   entropy_bonus: 0.0005

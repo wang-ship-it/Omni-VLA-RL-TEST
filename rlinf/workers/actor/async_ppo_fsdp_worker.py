@@ -20,6 +20,15 @@ import torch
 
 from rlinf.algorithms.registry import calculate_adv_and_returns, policy_loss
 from rlinf.config import SupportedModel
+from rlinf.utils.chain_trace import (
+    format_block,
+    get_chain_trace_config,
+    rowwise_abs_mean,
+    select_topk_indices,
+    should_enable_chain_trace,
+    tensor_stats_str,
+    trace_id_to_str,
+)
 from rlinf.utils.distributed import all_reduce_dict, masked_normalization
 from rlinf.utils.metric_utils import append_to_dict, compute_rollout_metrics
 from rlinf.utils.nested_dict_process import put_tensor_device, split_dict_to_chunk
@@ -145,6 +154,250 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
             "[Async PPO debug] encoder freeze status: " + ", ".join(status_parts)
         )
 
+    def _chain_trace_enabled(self) -> bool:
+        return should_enable_chain_trace(self.cfg, self._rank)
+
+    def _metric_value(self, metrics_data: dict[str, Any], key: str) -> float | None:
+        value = metrics_data.get(key, None)
+        if value is None:
+            return None
+        if torch.is_tensor(value):
+            if value.numel() == 0:
+                return None
+            return float(value.detach().float().mean().item())
+        return float(value)
+
+    def _train_chain_trace_triggered(self, metrics_data: dict[str, Any]) -> bool:
+        trace_cfg = get_chain_trace_config(self.cfg)
+        if not trace_cfg["enabled"]:
+            return False
+        if trace_cfg["mode"] != "anomaly":
+            return True
+        thresholds = trace_cfg["thresholds"]
+        behav_kl = self._metric_value(metrics_data, "actor/behav_approx_kl")
+        prox_old_gap = self._metric_value(
+            metrics_data, "actor/prox_old_logprob_gap_abs_mean"
+        )
+        train_rollout_gap = self._metric_value(
+            metrics_data, "actor/debug_train_rollout_logprob_gap_abs_mean"
+        )
+        return bool(
+            (behav_kl is not None and behav_kl >= thresholds["behav_approx_kl"])
+            or (
+                prox_old_gap is not None
+                and prox_old_gap >= thresholds["prox_old_gap_abs_mean"]
+            )
+            or (
+                train_rollout_gap is not None
+                and train_rollout_gap >= thresholds["train_rollout_gap_abs_mean"]
+            )
+        )
+
+    def _format_version_tuple(
+        self,
+        *,
+        versions: torch.Tensor | None,
+        batch_idx: int,
+        current_version: int | None = None,
+    ) -> str:
+        batch_version = None
+        if versions is not None:
+            batch_version = int(versions[batch_idx].detach().reshape(-1)[0].item())
+        return (
+            f"current_version={current_version}, "
+            f"previous_actor_version={int(self.version)}, "
+            f"batch_version={batch_version}"
+        )
+
+    def _log_proximal_chain_trace(
+        self,
+        *,
+        flat_batch: dict[str, Any],
+        proximal_logprobs_flat: torch.Tensor,
+        recompute_mode: str,
+        omni_semantic_overrides: dict[str, bool],
+        sample_trace_context: dict[str, Any] | None,
+    ) -> None:
+        if not self._chain_trace_enabled():
+            return
+
+        prev_logprobs = flat_batch["prev_logprobs"]
+        gap = proximal_logprobs_flat.float() - prev_logprobs.float()
+        sample_gap = rowwise_abs_mean(gap)
+        trace_cfg = get_chain_trace_config(self.cfg)
+        threshold = trace_cfg["thresholds"]["prox_old_gap_abs_mean"]
+        if trace_cfg["mode"] == "anomaly" and float(sample_gap.max().item()) < threshold:
+            return
+
+        forward_inputs = flat_batch.get("forward_inputs", {})
+        trace_ids = forward_inputs.get("debug_trace_ids")
+        sample_indices = forward_inputs.get("debug_sample_indices")
+        versions = flat_batch.get("versions")
+        topk_indices = select_topk_indices(sample_gap, trace_cfg["topk"])
+
+        summary_lines = [
+            (
+                f"step={int(self.version)} recompute_mode={recompute_mode} "
+                f"prox_old_gap_abs_mean={sample_gap.mean().item():.6f} "
+                f"prox_old_gap_abs_max={sample_gap.max().item():.6f} "
+                f"threshold={threshold:.6f}"
+            ),
+            f"trace_ids={[trace_id_to_str(trace_ids[idx]) for idx in topk_indices] if trace_ids is not None else []}",
+        ]
+        self.logger.info(format_block("STEP SUMMARY [PROXIMAL]", summary_lines))
+        self.logger.info(
+            format_block(
+                "DIFF SUMMARY [PROXIMAL]",
+                [
+                    f"prox_old_gap_abs_mean={sample_gap.mean().item():.6f}",
+                    f"prox_old_gap_abs_max={sample_gap.max().item():.6f}",
+                ],
+            )
+        )
+
+        for idx in topk_indices:
+            lines = [
+                (
+                    f"step={int(self.version)} trace_id={trace_id_to_str(trace_ids[idx]) if trace_ids is not None else 'none'} "
+                    f"sample_idx={int(sample_indices[idx].item()) if sample_indices is not None else idx} "
+                    f"{self._format_version_tuple(versions=versions, batch_idx=idx)}"
+                ),
+                (
+                    "semantic_flags="
+                    f"recompute_mode={recompute_mode}, "
+                    f"prefix_middle_no_grad_override={omni_semantic_overrides.get('prefix_middle_no_grad_override')}, "
+                    f"clone_past_key_values_override={omni_semantic_overrides.get('clone_past_key_values_override')}, "
+                    f"gradient_checkpointing_override={omni_semantic_overrides.get('gradient_checkpointing_override')}"
+                ),
+            ]
+            if sample_trace_context:
+                lines.append(
+                    "runtime_context="
+                    f"training={sample_trace_context.get('model_training')}, "
+                    f"gc={sample_trace_context.get('gradient_checkpointing_enabled')}, "
+                    f"reasoning_use_cache={sample_trace_context.get('reasoning_use_cache')}, "
+                    f"prefix_cache_seq_len={sample_trace_context.get('prefix_cache_seq_len')}, "
+                    f"middle_cache_seq_len={sample_trace_context.get('middle_cache_seq_len')}"
+                )
+            lines.extend(
+                [
+                    f"old_logprobs={tensor_stats_str(prev_logprobs[idx])}",
+                    f"proximal_logprobs={tensor_stats_str(proximal_logprobs_flat[idx])}",
+                    f"abs(old-prox)={tensor_stats_str(gap[idx].abs())}",
+                ]
+            )
+            self.logger.info(format_block("PROXIMAL RECOMPUTE TRACE", lines))
+
+    def _log_train_chain_trace(
+        self,
+        *,
+        metrics_data: dict[str, Any],
+        data: dict[str, Any],
+        out: dict[str, Any],
+        current_version: int,
+    ) -> None:
+        if not self._chain_trace_enabled():
+            return
+
+        behav_kl = self._metric_value(metrics_data, "actor/behav_approx_kl")
+        prox_old_gap_mean = self._metric_value(
+            metrics_data, "actor/prox_old_logprob_gap_abs_mean"
+        )
+        train_rollout_gap_mean = self._metric_value(
+            metrics_data, "actor/debug_train_rollout_logprob_gap_abs_mean"
+        )
+        logprobs = out["logprobs"].detach().float()
+        old_logprobs = data["prev_logprobs"].detach().float()
+        proximal_logprobs = data.get("proximal_logprobs", None)
+        proximal_logprobs = (
+            proximal_logprobs.detach().float() if proximal_logprobs is not None else None
+        )
+        sample_score = rowwise_abs_mean(logprobs - old_logprobs)
+        if proximal_logprobs is not None:
+            sample_score = sample_score + rowwise_abs_mean(proximal_logprobs - old_logprobs)
+
+        trace_cfg = get_chain_trace_config(self.cfg)
+        topk_indices = select_topk_indices(sample_score, trace_cfg["topk"])
+        forward_inputs = data["forward_inputs"]
+        trace_ids = forward_inputs.get("debug_trace_ids")
+        sample_indices = forward_inputs.get("debug_sample_indices")
+        versions = data.get("versions", None)
+        rollout_gap = forward_inputs.get("debug_old_vs_local_recompute_gap_abs_mean")
+        if rollout_gap is not None:
+            rollout_gap = rollout_gap.detach().float().reshape(-1)
+
+        summary_lines = [
+            (
+                f"step={int(self.version)} current_version={current_version} "
+                f"behav_approx_kl={behav_kl} "
+                f"prox_old_gap_abs_mean={prox_old_gap_mean} "
+                f"train_rollout_gap_abs_mean={train_rollout_gap_mean}"
+            ),
+            f"trace_ids={[trace_id_to_str(trace_ids[idx]) for idx in topk_indices] if trace_ids is not None else []}",
+        ]
+        self.logger.info(format_block("STEP SUMMARY [TRAIN]", summary_lines))
+        self.logger.info(
+            format_block(
+                "DIFF SUMMARY [TRAIN]",
+                [
+                    f"behav_approx_kl={behav_kl}",
+                    f"prox_old_gap_abs_mean={prox_old_gap_mean}",
+                    f"train_rollout_gap_abs_mean={train_rollout_gap_mean}",
+                ],
+            )
+        )
+
+        clip_fraction = self._metric_value(metrics_data, "actor/clip_fraction")
+        proximal_ratio = self._metric_value(metrics_data, "actor/proximal_ratio")
+        clipped_proximal_ratio = self._metric_value(
+            metrics_data, "actor/clipped_proximal_ratio"
+        )
+        for idx in topk_indices:
+            rollout_training = forward_inputs.get("debug_rollout_model_training")
+            rollout_gc = forward_inputs.get("debug_rollout_gradient_checkpointing_enabled")
+            rollout_use_cache = forward_inputs.get("debug_rollout_reasoning_use_cache")
+            rollout_prefix_cache_len = forward_inputs.get("debug_rollout_prefix_cache_seq_len")
+            rollout_middle_cache_len = forward_inputs.get("debug_rollout_middle_cache_seq_len")
+            lines = [
+                (
+                    f"step={int(self.version)} trace_id={trace_id_to_str(trace_ids[idx]) if trace_ids is not None else 'none'} "
+                    f"sample_idx={int(sample_indices[idx].item()) if sample_indices is not None else idx} "
+                    f"{self._format_version_tuple(versions=versions, batch_idx=idx, current_version=current_version)}"
+                ),
+                (
+                    "rollout_semantic_flags="
+                    f"training={int(rollout_training[idx].item()) if rollout_training is not None else 'na'}, "
+                    f"gc={int(rollout_gc[idx].item()) if rollout_gc is not None else 'na'}, "
+                    f"reasoning_use_cache={int(rollout_use_cache[idx].item()) if rollout_use_cache is not None else 'na'}, "
+                    f"prefix_cache_seq_len={int(rollout_prefix_cache_len[idx].item()) if rollout_prefix_cache_len is not None else 'na'}, "
+                    f"middle_cache_seq_len={int(rollout_middle_cache_len[idx].item()) if rollout_middle_cache_len is not None else 'na'}"
+                ),
+                f"old_logprobs={tensor_stats_str(old_logprobs[idx])}",
+                (
+                    f"proximal_logprobs={tensor_stats_str(proximal_logprobs[idx])}"
+                    if proximal_logprobs is not None
+                    else "proximal_logprobs=None"
+                ),
+                f"current_logprobs={tensor_stats_str(logprobs[idx])}",
+                f"advantages={tensor_stats_str(data['advantages'][idx])}",
+                (
+                    f"behav_weight={tensor_stats_str(torch.exp((proximal_logprobs[idx] - old_logprobs[idx]).detach()))}"
+                    if proximal_logprobs is not None
+                    else "behav_weight=None"
+                ),
+                (
+                    f"rollout_old_vs_local_gap_abs_mean={float(rollout_gap[idx].item()):.6f}"
+                    if rollout_gap is not None
+                    else "rollout_old_vs_local_gap_abs_mean=None"
+                ),
+                (
+                    f"clip_fraction={clip_fraction}, "
+                    f"proximal_ratio={proximal_ratio}, "
+                    f"clipped_proximal_ratio={clipped_proximal_ratio}"
+                ),
+            ]
+            self.logger.info(format_block("TRAIN CONSUME TRACE", lines))
+
     def _refresh_previous_actor_snapshot(self) -> None:
         if not hasattr(self, "previous_actor_state_dict"):
             self.previous_actor_state_dict = {}
@@ -234,6 +487,7 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
                 "{'train', 'eval'}"
             )
         proximal_logprobs_list = []
+        prox_trace_context = None
 
         try:
             with cpu_weight_swap(
@@ -274,10 +528,13 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
                             compute_entropy=False,
                             compute_values=False,
                             use_cache=False,
+                            debug_chain_trace=self._chain_trace_enabled(),
                             **omni_semantic_overrides,
                             **model_kwargs,
                         )
                         proximal_logprobs_list.append(out["logprobs"].cpu())
+                        if prox_trace_context is None:
+                            prox_trace_context = out.get("debug_trace_context", None)
         finally:
             if restore_omni_gradient_checkpointing:
                 self._set_omni_vla_gradient_checkpointing(True)
@@ -289,6 +546,13 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
             *self.rollout_batch["prev_logprobs"].shape[2:],
         )
         self.rollout_batch["proximal_logprobs"] = proximal_logprobs
+        self._log_proximal_chain_trace(
+            flat_batch=flat,
+            proximal_logprobs_flat=torch.cat(proximal_logprobs_list, dim=0),
+            recompute_mode=recompute_mode,
+            omni_semantic_overrides=omni_semantic_overrides,
+            sample_trace_context=prox_trace_context,
+        )
 
         if self._rank == 0 and int(self.version) < 3:
             prox_stats = proximal_logprobs.float()
@@ -370,6 +634,7 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
 
         metrics: dict[str, list] = {}
         update_epoch = int(self.cfg.algorithm.get("update_epoch", 1))
+        chain_trace_logged = False
 
         for _ in range(update_epoch):
             global_batch_iter = split_dict_to_chunk(
@@ -495,6 +760,17 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
                     debug_metrics = out.get("debug_metrics", None)
                     if debug_metrics:
                         metrics_data.update(debug_metrics)
+                    if (
+                        not chain_trace_logged
+                        and self._train_chain_trace_triggered(metrics_data)
+                    ):
+                        self._log_train_chain_trace(
+                            metrics_data=metrics_data,
+                            data=data,
+                            out=out,
+                            current_version=current_version,
+                        )
+                        chain_trace_logged = True
 
                     if (
                         self._rank == 0

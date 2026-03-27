@@ -338,6 +338,31 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
             if snapshot["action_use_cache"] is not None:
                 action_model.config.use_cache = snapshot["action_use_cache"]
 
+    def _get_debug_runtime_context(
+        self,
+        *,
+        prefix_middle_no_grad: bool,
+        clone_past_key_values: bool,
+        prefix_cache_seq_len: int,
+        middle_cache_seq_len: int,
+    ) -> dict[str, Any]:
+        reasoning_lm = self.reasoning_spatial_expert.reasoning_expert.language_model
+        spatial_model = self.reasoning_spatial_expert.spatial_expert.model
+        action_model = self.reasoning_spatial_expert.action_expert.model
+        return {
+            "model_training": bool(self.training),
+            "gradient_checkpointing_enabled": bool(
+                getattr(self, "gradient_checkpointing_enabled", False)
+            ),
+            "prefix_middle_no_grad": bool(prefix_middle_no_grad),
+            "clone_past_key_values": bool(clone_past_key_values),
+            "reasoning_use_cache": bool(getattr(reasoning_lm.config, "use_cache", False)),
+            "spatial_use_cache": bool(getattr(spatial_model.config, "use_cache", False)),
+            "action_use_cache": bool(getattr(action_model.config, "use_cache", False)),
+            "prefix_cache_seq_len": int(prefix_cache_seq_len),
+            "middle_cache_seq_len": int(middle_cache_seq_len),
+        }
+
     def sft_forward(self, data, **kwargs):
         observation = data["observation"]
         actions = data["actions"]
@@ -359,13 +384,19 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
         gradient_checkpointing_override = kwargs.get(
             "gradient_checkpointing_override", None
         )
+        debug_chain_trace = bool(kwargs.get("debug_chain_trace", False))
         debug_train_rollout_semantics_gap = bool(
             kwargs.get("debug_train_rollout_semantics_gap", False)
         )
         chains = forward_inputs["chains"]
         denoise_inds = forward_inputs["denoise_inds"]
+        observation_forward_inputs = {
+            key: value
+            for key, value in forward_inputs.items()
+            if not key.startswith("debug_")
+        }
         # input transform
-        observation = self.input_transform(forward_inputs, transpose=False)
+        observation = self.input_transform(observation_forward_inputs, transpose=False)
         observation = _model.Observation.from_dict(observation)
         images, img_masks, lang_tokens, lang_masks, state = (
             self._preprocess_observation(observation, train=False)
@@ -379,7 +410,7 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
         with self._temporary_gradient_checkpointing(
             gradient_checkpointing_override
         ):
-            log_probs, value_t, entropy = self.get_log_prob_value(
+            log_prob_outputs = self.get_log_prob_value(
                 images,
                 img_masks,
                 lang_tokens,
@@ -390,7 +421,12 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
                 compute_values,
                 prefix_middle_no_grad_override=prefix_middle_no_grad_override,
                 clone_past_key_values_override=clone_past_key_values_override,
+                return_debug_trace=debug_chain_trace,
             )
+        if debug_chain_trace:
+            log_probs, value_t, entropy, debug_trace_context = log_prob_outputs
+        else:
+            log_probs, value_t, entropy = log_prob_outputs
         log_probs = log_probs[
             :, :, : self.config.action_chunk, : self.config.action_env_dim
         ]
@@ -408,6 +444,8 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
             "values": value_t,
             "entropy": entropy,
         }
+        if debug_chain_trace:
+            output_dict["debug_trace_context"] = debug_trace_context
         if debug_train_rollout_semantics_gap:
             with torch.no_grad(), self._temporary_gradient_checkpointing(False):
                 rollout_semantic_log_probs, _, _ = self.get_log_prob_value(
@@ -892,12 +930,15 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
         compute_values=False,
         prefix_middle_no_grad_override=None,
         clone_past_key_values_override=None,
+        return_debug_trace=False,
     ):
         bsize = state.shape[0]
-        prefix_middle_no_grad, _ = self._resolve_omni_vla_semantics(
+        prefix_middle_no_grad, clone_past_key_values = self._resolve_omni_vla_semantics(
             prefix_middle_no_grad_override=prefix_middle_no_grad_override,
             clone_past_key_values_override=clone_past_key_values_override,
         )
+        prefix_cache_seq_len = 0
+        middle_cache_seq_len = 0
 
         # 1. Prefix
         if prefix_middle_no_grad:
@@ -937,6 +978,8 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
                 inputs_embeds=[prefix_embs_unscaled, None, None],
                 use_cache=True,
             )
+        if past_key_values is not None:
+            prefix_cache_seq_len = int(past_key_values.get_seq_length())
 
         # 2. Middle
         if prefix_middle_no_grad:
@@ -985,6 +1028,8 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
                 inputs_embeds=[None, middle_embs_unscaled, None],
                 use_cache=True,
             )
+        if past_key_values is not None:
+            middle_cache_seq_len = int(past_key_values.get_seq_length())
 
         chains_log_probs = []
         chains_values = []
@@ -1033,6 +1078,18 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
         chains_values = torch.stack(chains_values, dim=1)
         chains_entropy = torch.stack(chains_entropy, dim=1)
 
+        if return_debug_trace:
+            return (
+                chains_log_probs,
+                chains_values,
+                chains_entropy,
+                self._get_debug_runtime_context(
+                    prefix_middle_no_grad=prefix_middle_no_grad,
+                    clone_past_key_values=clone_past_key_values,
+                    prefix_cache_seq_len=prefix_cache_seq_len,
+                    middle_cache_seq_len=middle_cache_seq_len,
+                ),
+            )
         return chains_log_probs, chains_values, chains_entropy
 
     def get_logprob_norm(self, sample, mu, sigma):

@@ -29,6 +29,15 @@ from rlinf.models import get_model
 from rlinf.models.embodiment.base_policy import BasePolicy
 from rlinf.scheduler import Channel, Cluster, CollectiveGroupOptions, Worker
 from rlinf.utils.comm_mapping import CommMapper
+from rlinf.utils.chain_trace import (
+    format_block,
+    get_chain_trace_config,
+    rowwise_abs_mean,
+    select_topk_indices,
+    should_enable_chain_trace,
+    tensor_stats_str,
+    trace_id_to_str,
+)
 from rlinf.utils.placement import HybridComponentPlacement
 
 
@@ -85,6 +94,7 @@ class MultiStepRolloutWorker(Worker):
         self.applied_weight_version = 0
         self.requested_weight_version = 0
         self.finished_episodes = None
+        self._debug_trace_batch_counter = 0
 
     def init_worker(self):
         rollout_model_config = copy.deepcopy(self.cfg.actor.model)
@@ -317,7 +327,168 @@ class MultiStepRolloutWorker(Worker):
             actions = torch.from_numpy(actions)
 
         result["expert_label_flag"] = bool(expert_label_flag)
+        if (
+            mode == "train"
+            and SupportedModel(self.cfg.actor.model.model_type) == SupportedModel.OMNI_VLA
+        ):
+            self._attach_rollout_chain_trace(result)
         return actions, result
+
+    def _attach_rollout_chain_trace(self, result: dict[str, Any]) -> None:
+        forward_inputs = result.get("forward_inputs", {})
+        prev_logprobs = result.get("prev_logprobs", None)
+        if not forward_inputs or prev_logprobs is None:
+            return
+
+        batch_size = int(prev_logprobs.shape[0])
+        trace_base = (
+            int(self.applied_weight_version) * 1_000_000_000
+            + int(self._rank) * 1_000_000
+            + int(self._debug_trace_batch_counter) * 1_000
+        )
+        self._debug_trace_batch_counter += 1
+
+        trace_ids = torch.arange(
+            trace_base,
+            trace_base + batch_size,
+            dtype=torch.int64,
+            device=prev_logprobs.device,
+        )[:, None]
+        sample_indices = torch.arange(
+            batch_size, dtype=torch.int64, device=prev_logprobs.device
+        )[:, None]
+
+        forward_inputs["debug_trace_ids"] = trace_ids
+        forward_inputs["debug_sample_indices"] = sample_indices
+        forward_inputs["debug_rollout_step"] = torch.full(
+            (batch_size, 1),
+            int(self.version),
+            dtype=torch.int64,
+            device=prev_logprobs.device,
+        )
+        forward_inputs["debug_rollout_version"] = torch.full(
+            (batch_size, 1),
+            int(self.applied_weight_version),
+            dtype=torch.int64,
+            device=prev_logprobs.device,
+        )
+        forward_inputs["debug_rollout_rank"] = torch.full(
+            (batch_size, 1),
+            int(self._rank),
+            dtype=torch.int64,
+            device=prev_logprobs.device,
+        )
+
+        trace_enabled = should_enable_chain_trace(self.cfg, self._rank)
+        if not trace_enabled:
+            return
+
+        recompute_out = self.hf_model(
+            forward_inputs=forward_inputs,
+            compute_logprobs=True,
+            compute_entropy=False,
+            compute_values=False,
+            use_cache=False,
+            debug_chain_trace=True,
+            prefix_middle_no_grad_override=False,
+            clone_past_key_values_override=True,
+            gradient_checkpointing_override=False,
+        )
+        local_logprobs = recompute_out["logprobs"].detach()
+        gap = prev_logprobs.detach().float() - local_logprobs.float()
+        sample_gap_abs_mean = rowwise_abs_mean(gap)
+        sample_gap_mean = gap.reshape(gap.shape[0], -1).mean(dim=1)
+
+        forward_inputs["debug_old_vs_local_recompute_gap_abs_mean"] = (
+            sample_gap_abs_mean[:, None]
+        )
+        forward_inputs["debug_old_vs_local_recompute_gap_mean"] = sample_gap_mean[:, None]
+
+        trace_context = recompute_out.get("debug_trace_context", {})
+        for key in (
+            "model_training",
+            "gradient_checkpointing_enabled",
+            "reasoning_use_cache",
+            "spatial_use_cache",
+            "action_use_cache",
+            "prefix_middle_no_grad",
+            "clone_past_key_values",
+            "prefix_cache_seq_len",
+            "middle_cache_seq_len",
+        ):
+            value = trace_context.get(key, 0)
+            dtype = torch.int64 if isinstance(value, bool) or isinstance(value, int) else torch.float32
+            forward_inputs[f"debug_rollout_{key}"] = torch.full(
+                (batch_size, 1),
+                int(value) if dtype == torch.int64 else float(value),
+                dtype=dtype,
+                device=prev_logprobs.device,
+            )
+
+        trace_cfg = get_chain_trace_config(self.cfg)
+        threshold = trace_cfg["thresholds"]["train_rollout_gap_abs_mean"]
+        should_log = (
+            trace_cfg["mode"] != "anomaly"
+            or float(sample_gap_abs_mean.max().item()) >= threshold
+        )
+        if not should_log:
+            return
+
+        topk_indices = select_topk_indices(sample_gap_abs_mean, trace_cfg["topk"])
+        summary_lines = [
+            (
+                f"step={int(self.version)} rollout_version={int(self.applied_weight_version)} "
+                f"worker_rank={int(self._rank)} batch_size={batch_size} "
+                f"old_vs_local_gap_abs_mean={sample_gap_abs_mean.mean().item():.6f} "
+                f"old_vs_local_gap_abs_max={sample_gap_abs_mean.max().item():.6f} "
+                f"threshold={threshold:.6f}"
+            ),
+            f"trace_ids={[trace_id_to_str(trace_ids[idx]) for idx in topk_indices]}",
+        ]
+        self.logger.info(format_block("STEP SUMMARY [ROLLOUT]", summary_lines))
+        self.logger.info(
+            format_block(
+                "DIFF SUMMARY [ROLLOUT]",
+                [
+                    f"old_vs_local_gap_abs_mean={sample_gap_abs_mean.mean().item():.6f}",
+                    f"old_vs_local_gap_abs_max={sample_gap_abs_mean.max().item():.6f}",
+                ],
+            )
+        )
+
+        chains = forward_inputs.get("chains")
+        denoise_inds = forward_inputs.get("denoise_inds")
+        for idx in topk_indices:
+            denoise = denoise_inds[idx].detach().cpu()
+            denoise_pos = int(denoise.reshape(-1)[0].item())
+            chains_pre = chains[idx, denoise_pos]
+            chains_next = chains[idx, denoise_pos + 1]
+            lines = [
+                (
+                    f"step={int(self.version)} trace_id={trace_id_to_str(trace_ids[idx])} "
+                    f"sample_idx={int(sample_indices[idx].item())} "
+                    f"rollout_version={int(self.applied_weight_version)}"
+                ),
+                (
+                    "semantic_flags="
+                    f"training={bool(trace_context.get('model_training', False))}, "
+                    f"gc={bool(trace_context.get('gradient_checkpointing_enabled', False))}, "
+                    f"reasoning_use_cache={bool(trace_context.get('reasoning_use_cache', False))}, "
+                    f"prefix_cache_seq_len={int(trace_context.get('prefix_cache_seq_len', 0))}, "
+                    f"middle_cache_seq_len={int(trace_context.get('middle_cache_seq_len', 0))}"
+                ),
+                f"denoise_inds={tensor_stats_str(denoise_inds[idx])}",
+                f"chains={tensor_stats_str(chains[idx])}",
+                f"chains_pre={tensor_stats_str(chains_pre)}",
+                f"chains_next={tensor_stats_str(chains_next)}",
+                f"prev_logprobs={tensor_stats_str(prev_logprobs[idx])}",
+                f"local_recompute_logprobs={tensor_stats_str(local_logprobs[idx])}",
+                (
+                    f"old_vs_local_gap={tensor_stats_str(gap[idx])} "
+                    f"old_vs_local_gap_abs_mean={float(sample_gap_abs_mean[idx].item()):.6f}"
+                ),
+            ]
+            self.logger.info(format_block("ROLLOUT TRACE", lines))
 
     def get_bootstrap_values(
         self, final_obs: dict[str, Any] | None
