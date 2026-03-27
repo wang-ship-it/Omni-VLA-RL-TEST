@@ -87,6 +87,23 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
             model = model.module
         return model
 
+    def _set_omni_vla_gradient_checkpointing(self, enabled: bool) -> bool:
+        model = self._unwrap_model_for_debug()
+        toggle_method = getattr(model, "gradient_checkpointing_enable", None)
+        disable_method = getattr(model, "gradient_checkpointing_disable", None)
+        reasoning_spatial_expert = getattr(model, "reasoning_spatial_expert", None)
+        if (
+            reasoning_spatial_expert is None
+            or toggle_method is None
+            or disable_method is None
+        ):
+            return False
+        if enabled:
+            toggle_method()
+        else:
+            disable_method()
+        return True
+
     def _log_encoder_freeze_status(self) -> None:
         if not (self._rank == 0 and int(self.version) < 3):
             return
@@ -193,6 +210,7 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
             self.cfg.algorithm.get("proximal_recompute_model_mode", "train")
         ).lower()
         omni_semantic_overrides: dict[str, bool] = {}
+        restore_omni_gradient_checkpointing = False
         if recompute_mode == "train":
             self.model.train()
         elif recompute_mode == "eval":
@@ -200,9 +218,13 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
                 # Keep the global module in train mode so activation-memory paths remain valid,
                 # while explicitly overriding the Omni-VLA behavior semantics to mimic rollout.
                 self.model.train()
+                restore_omni_gradient_checkpointing = (
+                    self._set_omni_vla_gradient_checkpointing(False)
+                )
                 omni_semantic_overrides = {
                     "prefix_middle_no_grad_override": False,
                     "clone_past_key_values_override": True,
+                    "gradient_checkpointing_override": False,
                 }
             else:
                 self.model.eval()
@@ -257,6 +279,8 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
                         )
                         proximal_logprobs_list.append(out["logprobs"].cpu())
         finally:
+            if restore_omni_gradient_checkpointing:
+                self._set_omni_vla_gradient_checkpointing(True)
             self.model.train(prev_training_mode)
 
         proximal_logprobs = torch.cat(proximal_logprobs_list, dim=0).view(

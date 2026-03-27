@@ -14,6 +14,7 @@
 
 import math
 import random
+from contextlib import contextmanager
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -278,6 +279,65 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
         )
         return prefix_middle_no_grad, clone_past_key_values
 
+    @contextmanager
+    def _temporary_gradient_checkpointing(self, enabled: bool | None):
+        """Temporarily override gradient-checkpointing/cache flags for semantic probes."""
+        if enabled is None:
+            yield
+            return
+
+        reasoning_lm = self.reasoning_spatial_expert.reasoning_expert.language_model
+        vision_tower = self.reasoning_spatial_expert.reasoning_expert.vision_tower
+        spatial_model = self.reasoning_spatial_expert.spatial_expert.model
+        action_model = self.reasoning_spatial_expert.action_expert.model
+
+        snapshot = {
+            "top_level_gc": getattr(self, "gradient_checkpointing_enabled", None),
+            "reasoning_gc": getattr(reasoning_lm, "gradient_checkpointing", None),
+            "vision_gc": getattr(vision_tower, "gradient_checkpointing", None),
+            "spatial_gc": getattr(spatial_model, "gradient_checkpointing", None),
+            "action_gc": getattr(action_model, "gradient_checkpointing", None),
+            "reasoning_use_cache": getattr(reasoning_lm.config, "use_cache", None),
+            "spatial_use_cache": getattr(spatial_model.config, "use_cache", None),
+            "action_use_cache": getattr(action_model.config, "use_cache", None),
+        }
+
+        try:
+            if snapshot["top_level_gc"] is not None:
+                self.gradient_checkpointing_enabled = enabled
+            if snapshot["reasoning_gc"] is not None:
+                reasoning_lm.gradient_checkpointing = enabled
+            if snapshot["vision_gc"] is not None:
+                vision_tower.gradient_checkpointing = enabled
+            if snapshot["spatial_gc"] is not None:
+                spatial_model.gradient_checkpointing = enabled
+            if snapshot["action_gc"] is not None:
+                action_model.gradient_checkpointing = enabled
+            if snapshot["reasoning_use_cache"] is not None:
+                reasoning_lm.config.use_cache = not enabled
+            if snapshot["spatial_use_cache"] is not None:
+                spatial_model.config.use_cache = not enabled
+            if snapshot["action_use_cache"] is not None:
+                action_model.config.use_cache = not enabled
+            yield
+        finally:
+            if snapshot["top_level_gc"] is not None:
+                self.gradient_checkpointing_enabled = snapshot["top_level_gc"]
+            if snapshot["reasoning_gc"] is not None:
+                reasoning_lm.gradient_checkpointing = snapshot["reasoning_gc"]
+            if snapshot["vision_gc"] is not None:
+                vision_tower.gradient_checkpointing = snapshot["vision_gc"]
+            if snapshot["spatial_gc"] is not None:
+                spatial_model.gradient_checkpointing = snapshot["spatial_gc"]
+            if snapshot["action_gc"] is not None:
+                action_model.gradient_checkpointing = snapshot["action_gc"]
+            if snapshot["reasoning_use_cache"] is not None:
+                reasoning_lm.config.use_cache = snapshot["reasoning_use_cache"]
+            if snapshot["spatial_use_cache"] is not None:
+                spatial_model.config.use_cache = snapshot["spatial_use_cache"]
+            if snapshot["action_use_cache"] is not None:
+                action_model.config.use_cache = snapshot["action_use_cache"]
+
     def sft_forward(self, data, **kwargs):
         observation = data["observation"]
         actions = data["actions"]
@@ -296,6 +356,9 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
         clone_past_key_values_override = kwargs.get(
             "clone_past_key_values_override", None
         )
+        gradient_checkpointing_override = kwargs.get(
+            "gradient_checkpointing_override", None
+        )
         debug_train_rollout_semantics_gap = bool(
             kwargs.get("debug_train_rollout_semantics_gap", False)
         )
@@ -313,18 +376,21 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
         img_masks = [img_mask.to(device) for img_mask in img_masks]
         state = state.to(device)
         # get log prob
-        log_probs, value_t, entropy = self.get_log_prob_value(
-            images,
-            img_masks,
-            lang_tokens,
-            lang_masks,
-            state,
-            chains,
-            denoise_inds,
-            compute_values,
-            prefix_middle_no_grad_override=prefix_middle_no_grad_override,
-            clone_past_key_values_override=clone_past_key_values_override,
-        )
+        with self._temporary_gradient_checkpointing(
+            gradient_checkpointing_override
+        ):
+            log_probs, value_t, entropy = self.get_log_prob_value(
+                images,
+                img_masks,
+                lang_tokens,
+                lang_masks,
+                state,
+                chains,
+                denoise_inds,
+                compute_values,
+                prefix_middle_no_grad_override=prefix_middle_no_grad_override,
+                clone_past_key_values_override=clone_past_key_values_override,
+            )
         log_probs = log_probs[
             :, :, : self.config.action_chunk, : self.config.action_env_dim
         ]
@@ -343,7 +409,7 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
             "entropy": entropy,
         }
         if debug_train_rollout_semantics_gap:
-            with torch.no_grad():
+            with torch.no_grad(), self._temporary_gradient_checkpointing(False):
                 rollout_semantic_log_probs, _, _ = self.get_log_prob_value(
                     images,
                     img_masks,
