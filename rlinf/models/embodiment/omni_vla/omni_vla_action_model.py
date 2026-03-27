@@ -508,28 +508,39 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
         if debug_chain_trace:
             output_dict["debug_trace_context"] = debug_trace_context
         if debug_train_rollout_semantics_gap:
-            with torch.no_grad(), self._temporary_gradient_checkpointing(False):
-                rollout_semantic_log_probs, _, _ = self.get_log_prob_value(
-                    images,
-                    img_masks,
-                    lang_tokens,
-                    lang_masks,
-                    state,
-                    chains,
-                    denoise_inds,
-                    False,
-                    prefix_middle_no_grad_override=False,
-                    clone_past_key_values_override=True,
-                )
-                rollout_semantic_log_probs = rollout_semantic_log_probs[
-                    :, :, : self.config.action_chunk, : self.config.action_env_dim
-                ].mean(dim=1)
-                semantic_gap = log_probs.detach().float() - rollout_semantic_log_probs.float()
-                output_dict["debug_metrics"] = {
-                    "actor/debug_train_rollout_logprob_gap_mean": semantic_gap.mean(),
-                    "actor/debug_train_rollout_logprob_gap_abs_mean": semantic_gap.abs().mean(),
-                    "actor/debug_train_rollout_logprob_gap_max": semantic_gap.abs().max(),
-                }
+            # If the current forward is already using behavior/eval semantics, avoid a
+            # second expensive rollout-style recompute. This path was causing OOM once
+            # current train forward had been aligned to rollout semantics.
+            if behavior_eval_override:
+                semantic_gap = torch.zeros_like(log_probs.detach().float())
+            else:
+                with torch.no_grad(), self._temporary_behavior_eval_modules(
+                    True,
+                    include_vision=behavior_eval_include_vision,
+                ), self._temporary_gradient_checkpointing(False):
+                    rollout_semantic_log_probs, _, _ = self.get_log_prob_value(
+                        images,
+                        img_masks,
+                        lang_tokens,
+                        lang_masks,
+                        state,
+                        chains,
+                        denoise_inds,
+                        False,
+                        prefix_middle_no_grad_override=False,
+                        clone_past_key_values_override=True,
+                    )
+                    rollout_semantic_log_probs = rollout_semantic_log_probs[
+                        :, :, : self.config.action_chunk, : self.config.action_env_dim
+                    ].mean(dim=1)
+                    semantic_gap = (
+                        log_probs.detach().float() - rollout_semantic_log_probs.float()
+                    )
+            output_dict["debug_metrics"] = {
+                "actor/debug_train_rollout_logprob_gap_mean": semantic_gap.mean(),
+                "actor/debug_train_rollout_logprob_gap_abs_mean": semantic_gap.abs().mean(),
+                "actor/debug_train_rollout_logprob_gap_max": semantic_gap.abs().max(),
+            }
         return output_dict
 
     def obs_processor(self, env_obs):
