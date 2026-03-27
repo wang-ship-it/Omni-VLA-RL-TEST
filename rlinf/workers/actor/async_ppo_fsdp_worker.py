@@ -167,6 +167,19 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
             return float(value.detach().float().mean().item())
         return float(value)
 
+    def _to_host_scalar_dict(self, metrics_data: dict[str, Any]) -> dict[str, float]:
+        host_metrics: dict[str, float] = {}
+        for key, value in metrics_data.items():
+            if value is None:
+                continue
+            if torch.is_tensor(value):
+                if value.numel() == 0:
+                    continue
+                host_metrics[key] = float(value.detach().float().mean().cpu().item())
+            else:
+                host_metrics[key] = float(value)
+        return host_metrics
+
     def _train_chain_trace_triggered(self, metrics_data: dict[str, Any]) -> bool:
         trace_cfg = get_chain_trace_config(self.cfg)
         if not trace_cfg["enabled"]:
@@ -570,6 +583,20 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
                 f"prox_prev_gap={torch.mean(torch.abs(prox_stats - prev_stats)).item():.6f}"
             )
 
+    def _get_omni_vla_semantic_overrides(self, mode: str) -> dict[str, bool]:
+        normalized_mode = str(mode).lower()
+        if normalized_mode == "train":
+            return {}
+        if normalized_mode == "eval":
+            return {
+                "prefix_middle_no_grad_override": False,
+                "clone_past_key_values_override": True,
+                "gradient_checkpointing_override": False,
+            }
+        raise ValueError(
+            "Omni-VLA semantic mode must be one of {'train', 'eval'}"
+        )
+
     def run_training(self) -> dict[str, Any]:
         if self.is_weight_offloaded:
             self.load_param_and_grad(self.device)
@@ -704,6 +731,17 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
                         model_kwargs["prev_logprobs"] = old_logprobs
 
                     compute_values = self.cfg.algorithm.adv_type == "gae"
+                    train_semantic_overrides: dict[str, bool] = {}
+                    if (
+                        SupportedModel(self.cfg.actor.model.model_type)
+                        == SupportedModel.OMNI_VLA
+                    ):
+                        train_model_mode = str(
+                            self.cfg.algorithm.get("actor_train_model_mode", "train")
+                        ).lower()
+                        train_semantic_overrides = (
+                            self._get_omni_vla_semantic_overrides(train_model_mode)
+                        )
 
                     with self.amp_context:
                         out = self.model(
@@ -715,6 +753,8 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
                             debug_train_rollout_semantics_gap=self.cfg.algorithm.get(
                                 "debug_train_rollout_semantics_gap", False
                             ),
+                            debug_chain_trace=self._chain_trace_enabled(),
+                            **train_semantic_overrides,
                             **model_kwargs,
                         )
 
@@ -849,7 +889,7 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
                     metrics_data["actor/total_loss"] = float(loss.detach().item())
                     for key, value in tracked_receive_stats.items():
                         metrics_data[f"actor/{key}"] = float(value)
-                    append_to_dict(metrics, metrics_data)
+                    append_to_dict(metrics, self._to_host_scalar_dict(metrics_data))
 
                 torch.cuda.empty_cache()
 
@@ -860,7 +900,7 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
                 }
                 if len(lr_list) > 1:
                     extra_metrics["critic/lr"] = lr_list[1]
-                append_to_dict(metrics, extra_metrics)
+                append_to_dict(metrics, self._to_host_scalar_dict(extra_metrics))
 
         self.lr_scheduler.step()
         self.optimizer.zero_grad()

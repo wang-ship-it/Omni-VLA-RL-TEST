@@ -59,6 +59,7 @@ algorithm:
   loss_type: decoupled_actor_critic
   loss_agg_func: "token-mean"
   proximal_recompute_model_mode: eval
+  actor_train_model_mode: eval
   debug_train_rollout_semantics_gap: True
   debug_chain_trace: True
   debug_chain_trace_mode: anomaly
