@@ -58,10 +58,14 @@ algorithm:
   adv_type: gae
   loss_type: decoupled_actor_critic
   loss_agg_func: "token-mean"
+  # Recompute old-policy logprobs with rollout-matching semantics.
   proximal_recompute_model_mode: eval
-  actor_train_model_mode: eval_light
-  debug_train_rollout_semantics_gap: True
-  debug_chain_trace: True
+  # Align current-train logprob semantics with rollout behavior policy without
+  # forcing the entire vision path onto the heavier full-eval route.
+  actor_train_model_mode: behavior_align
+  # Keep these off for stable baselines; re-enable only for further diagnosis.
+  debug_train_rollout_semantics_gap: False
+  debug_chain_trace: False
   debug_chain_trace_mode: anomaly
   debug_chain_trace_topk: 3
   debug_chain_trace_rank0_only: True

@@ -587,14 +587,19 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
         normalized_mode = str(mode).lower()
         if normalized_mode == "train":
             return {}
-        if normalized_mode == "eval":
+        # Full behavior-policy semantics. This best matches rollout/old-logprob
+        # generation but is the most memory-intensive option.
+        if normalized_mode in {"eval", "behavior_align_full"}:
             return {
                 "prefix_middle_no_grad_override": False,
                 "clone_past_key_values_override": True,
                 "gradient_checkpointing_override": False,
                 "behavior_eval_override": True,
             }
-        if normalized_mode == "eval_light":
+        # Lightweight behavior-policy alignment: keep the vision tower on the
+        # training path while aligning the language/spatial/action modules to the
+        # rollout semantics that drive behavior logprobs.
+        if normalized_mode in {"eval_light", "behavior_align"}:
             return {
                 "prefix_middle_no_grad_override": True,
                 "clone_past_key_values_override": True,
@@ -602,7 +607,9 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
                 "behavior_eval_include_vision": False,
             }
         raise ValueError(
-            "Omni-VLA semantic mode must be one of {'train', 'eval', 'eval_light'}"
+            "Omni-VLA semantic mode must be one of "
+            "{'train', 'behavior_align', 'behavior_align_full'} "
+            "(legacy aliases: 'eval_light', 'eval')"
         )
 
     def run_training(self) -> dict[str, Any]:
@@ -745,7 +752,10 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
                         == SupportedModel.OMNI_VLA
                     ):
                         train_model_mode = str(
-                            self.cfg.algorithm.get("actor_train_model_mode", "train")
+                            self.cfg.algorithm.get(
+                                "actor_train_model_mode",
+                                "behavior_align",
+                            )
                         ).lower()
                         train_semantic_overrides = (
                             self._get_omni_vla_semantic_overrides(train_model_mode)

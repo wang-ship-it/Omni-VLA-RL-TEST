@@ -1,5 +1,16 @@
 # Omni-VLA Async PPO 指标观察手册
 
+如果当前 run 的核心异常表现为：
+
+- `behav_approx_kl` 长期高位
+- `proximal_*` 却接近正常
+
+建议先看这份专项记录：
+
+- [`docs/integration/omni_vla_async_ppo_behavior_semantics_fix_2026-03-27.md`](/Users/kaelynwang/Desktop/kaelynwang/Omni_VLA/docs/integration/omni_vla_async_ppo_behavior_semantics_fix_2026-03-27.md)
+
+该问题在 2026-03-27 已定位为“rollout 行为语义与 actor train forward 语义分叉”，不是简单的 async lag 或超参过大。
+
 这份手册面向当前这条训练链：
 
 - `AsyncPPOEmbodiedRunner`
