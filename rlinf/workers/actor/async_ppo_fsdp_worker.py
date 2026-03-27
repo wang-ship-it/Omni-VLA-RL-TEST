@@ -592,9 +592,17 @@ class AsyncPPOEmbodiedFSDPActor(EmbodiedFSDPActor):
                 "prefix_middle_no_grad_override": False,
                 "clone_past_key_values_override": True,
                 "gradient_checkpointing_override": False,
+                "behavior_eval_override": True,
+            }
+        if normalized_mode == "eval_light":
+            return {
+                "prefix_middle_no_grad_override": True,
+                "clone_past_key_values_override": True,
+                "behavior_eval_override": True,
+                "behavior_eval_include_vision": False,
             }
         raise ValueError(
-            "Omni-VLA semantic mode must be one of {'train', 'eval'}"
+            "Omni-VLA semantic mode must be one of {'train', 'eval', 'eval_light'}"
         )
 
     def run_training(self) -> dict[str, Any]:

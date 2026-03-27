@@ -338,6 +338,56 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
             if snapshot["action_use_cache"] is not None:
                 action_model.config.use_cache = snapshot["action_use_cache"]
 
+    @contextmanager
+    def _temporary_behavior_eval_modules(
+        self,
+        enabled: bool | None,
+        *,
+        include_vision: bool = False,
+    ):
+        if not enabled:
+            yield
+            return
+
+        reasoning_lm = self.reasoning_spatial_expert.reasoning_expert.language_model
+        vision_tower = self.reasoning_spatial_expert.reasoning_expert.vision_tower
+        spatial_model = self.reasoning_spatial_expert.spatial_expert.model
+        action_model = self.reasoning_spatial_expert.action_expert.model
+
+        modules = [reasoning_lm, spatial_model, action_model]
+        if include_vision:
+            modules.append(vision_tower)
+
+        snapshot = {
+            "training": {id(module): bool(module.training) for module in modules},
+            "gc": {
+                id(module): getattr(module, "gradient_checkpointing", None)
+                for module in modules
+            },
+            "use_cache": {
+                id(module): getattr(getattr(module, "config", None), "use_cache", None)
+                for module in modules
+            },
+        }
+
+        try:
+            for module in modules:
+                module.eval()
+                if snapshot["gc"][id(module)] is not None:
+                    module.gradient_checkpointing = False
+                config = getattr(module, "config", None)
+                if config is not None and snapshot["use_cache"][id(module)] is not None:
+                    config.use_cache = True
+            yield
+        finally:
+            for module in modules:
+                module.train(snapshot["training"][id(module)])
+                if snapshot["gc"][id(module)] is not None:
+                    module.gradient_checkpointing = snapshot["gc"][id(module)]
+                config = getattr(module, "config", None)
+                if config is not None and snapshot["use_cache"][id(module)] is not None:
+                    config.use_cache = snapshot["use_cache"][id(module)]
+
     def _get_debug_runtime_context(
         self,
         *,
@@ -354,6 +404,9 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
             "gradient_checkpointing_enabled": bool(
                 getattr(self, "gradient_checkpointing_enabled", False)
             ),
+            "reasoning_training": bool(reasoning_lm.training),
+            "spatial_training": bool(spatial_model.training),
+            "action_training": bool(action_model.training),
             "prefix_middle_no_grad": bool(prefix_middle_no_grad),
             "clone_past_key_values": bool(clone_past_key_values),
             "reasoning_use_cache": bool(getattr(reasoning_lm.config, "use_cache", False)),
@@ -384,6 +437,10 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
         gradient_checkpointing_override = kwargs.get(
             "gradient_checkpointing_override", None
         )
+        behavior_eval_override = kwargs.get("behavior_eval_override", None)
+        behavior_eval_include_vision = bool(
+            kwargs.get("behavior_eval_include_vision", False)
+        )
         debug_chain_trace = bool(kwargs.get("debug_chain_trace", False))
         debug_train_rollout_semantics_gap = bool(
             kwargs.get("debug_train_rollout_semantics_gap", False)
@@ -407,22 +464,26 @@ class OmniVLAForRLActionPrediction(OmniVLA, BasePolicy):
         img_masks = [img_mask.to(device) for img_mask in img_masks]
         state = state.to(device)
         # get log prob
-        with self._temporary_gradient_checkpointing(
-            gradient_checkpointing_override
+        with self._temporary_behavior_eval_modules(
+            behavior_eval_override,
+            include_vision=behavior_eval_include_vision,
         ):
-            log_prob_outputs = self.get_log_prob_value(
-                images,
-                img_masks,
-                lang_tokens,
-                lang_masks,
-                state,
-                chains,
-                denoise_inds,
-                compute_values,
-                prefix_middle_no_grad_override=prefix_middle_no_grad_override,
-                clone_past_key_values_override=clone_past_key_values_override,
-                return_debug_trace=debug_chain_trace,
-            )
+            with self._temporary_gradient_checkpointing(
+                gradient_checkpointing_override
+            ):
+                log_prob_outputs = self.get_log_prob_value(
+                    images,
+                    img_masks,
+                    lang_tokens,
+                    lang_masks,
+                    state,
+                    chains,
+                    denoise_inds,
+                    compute_values,
+                    prefix_middle_no_grad_override=prefix_middle_no_grad_override,
+                    clone_past_key_values_override=clone_past_key_values_override,
+                    return_debug_trace=debug_chain_trace,
+                )
         if debug_chain_trace:
             log_probs, value_t, entropy, debug_trace_context = log_prob_outputs
         else:
