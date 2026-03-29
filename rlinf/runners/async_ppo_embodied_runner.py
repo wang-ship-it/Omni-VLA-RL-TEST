@@ -134,6 +134,10 @@ class AsyncPPOEmbodiedRunner(EmbodiedRunner):
         )
 
         while self.global_step < self.max_steps:
+            self.logger.info(
+                "[Runner debug] starting async PPO step %s",
+                self.global_step + 1,
+            )
             with self.timer("step"):
                 with self.timer("recv_rollout_trajectories"):
                     self.actor.recv_rollout_trajectories(

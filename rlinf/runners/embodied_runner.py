@@ -442,6 +442,10 @@ class EmbodiedRunner:
             self.global_step,
             time.time() - save_t0,
         )
+        self.logger.info(
+            "[Checkpoint debug] runner resumed main loop after save at step %s",
+            self.global_step,
+        )
 
     def set_max_steps(self):
         self.num_steps_per_epoch = 1
