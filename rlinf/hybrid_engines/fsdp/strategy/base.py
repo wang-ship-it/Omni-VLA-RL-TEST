@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from logging import Logger
@@ -207,8 +208,30 @@ class FSDPStrategyBase(ABC):
             save_full_model_weights (bool): Whether to save full model weights.
             checkpoint_format (str): "dcp" or "local_shard".
         """
+        save_t0 = time.time()
+        rank = torch.distributed.get_rank()
+        if hasattr(cls, "logger") and cls.logger is not None:
+            cls.logger.info(
+                "[Checkpoint debug] rank %s entering FSDPStrategyBase.save_checkpoint(path=%s, format=%s, save_full_model_weights=%s)",
+                rank,
+                save_path,
+                checkpoint_format,
+                save_full_model_weights,
+            )
         clear_memory()
+        if hasattr(cls, "logger") and cls.logger is not None:
+            cls.logger.info(
+                "[Checkpoint debug] rank %s before pre-save barrier (elapsed %.2fs)",
+                rank,
+                time.time() - save_t0,
+            )
         torch.distributed.barrier()
+        if hasattr(cls, "logger") and cls.logger is not None:
+            cls.logger.info(
+                "[Checkpoint debug] rank %s passed pre-save barrier (elapsed %.2fs)",
+                rank,
+                time.time() - save_t0,
+            )
         opts = StateDictOptions(full_state_dict=False, cpu_offload=True)
         try:
             training_state = Checkpoint(
@@ -219,11 +242,22 @@ class FSDPStrategyBase(ABC):
                 fsdp_version=cls.get_fsdp_version(),
                 checkpoint_format=checkpoint_format,
             )
+            if hasattr(cls, "logger") and cls.logger is not None:
+                cls.logger.info(
+                    "[Checkpoint debug] rank %s built training_state (elapsed %.2fs)",
+                    rank,
+                    time.time() - save_t0,
+                )
             if checkpoint_format == "local_shard":
                 local_shard_save_path = os.path.join(
                     save_path, "local_shard_checkpoint"
                 )
-                rank = torch.distributed.get_rank()
+                if hasattr(cls, "logger") and cls.logger is not None:
+                    cls.logger.info(
+                        "[Checkpoint debug] rank %s saving local_shard checkpoint to %s",
+                        rank,
+                        local_shard_save_path,
+                    )
                 os.makedirs(local_shard_save_path, exist_ok=True)
                 torch.save(
                     training_state.state_dict(),
@@ -233,10 +267,22 @@ class FSDPStrategyBase(ABC):
                 from torch.distributed import checkpoint as dcp
 
                 dcp_save_path = os.path.join(save_path, "dcp_checkpoint")
+                if hasattr(cls, "logger") and cls.logger is not None:
+                    cls.logger.info(
+                        "[Checkpoint debug] rank %s calling torch.distributed.checkpoint.save to %s",
+                        rank,
+                        dcp_save_path,
+                    )
                 dcp.save(
                     {"fsdp_checkpoint": training_state},
                     checkpoint_id=dcp_save_path,
                 )
+                if hasattr(cls, "logger") and cls.logger is not None:
+                    cls.logger.info(
+                        "[Checkpoint debug] rank %s finished dcp.save (elapsed %.2fs)",
+                        rank,
+                        time.time() - save_t0,
+                    )
 
         except BaseException as e:
             import traceback
@@ -245,11 +291,29 @@ class FSDPStrategyBase(ABC):
                 cls.logger.error(f"Failed to save checkpoint to {save_path}: {e}")
             traceback.print_exc()
             raise e
+        if hasattr(cls, "logger") and cls.logger is not None:
+            cls.logger.info(
+                "[Checkpoint debug] rank %s before post-save barrier (elapsed %.2fs)",
+                rank,
+                time.time() - save_t0,
+            )
         torch.distributed.barrier()
+        if hasattr(cls, "logger") and cls.logger is not None:
+            cls.logger.info(
+                "[Checkpoint debug] rank %s passed post-save barrier (elapsed %.2fs)",
+                rank,
+                time.time() - save_t0,
+            )
 
         if save_full_model_weights:
             opts = StateDictOptions(full_state_dict=True, cpu_offload=True)
             sd_save_path = os.path.join(save_path, "model_state_dict")
+            if hasattr(cls, "logger") and cls.logger is not None:
+                cls.logger.info(
+                    "[Checkpoint debug] rank %s collecting full model state dict to %s",
+                    rank,
+                    sd_save_path,
+                )
             model_state_dict = get_model_state_dict(model=model, options=opts)
             if torch.distributed.get_rank() == 0:
                 os.makedirs(sd_save_path, exist_ok=True)
@@ -263,8 +327,26 @@ class FSDPStrategyBase(ABC):
                     torch.save(
                         model_state_dict, os.path.join(sd_save_path, "full_weights.pt")
                     )
+                if hasattr(cls, "logger") and cls.logger is not None:
+                    cls.logger.info(
+                        "[Checkpoint debug] rank %s wrote full model state dict to %s",
+                        rank,
+                        os.path.join(sd_save_path, "full_weights.pt"),
+                    )
 
             torch.distributed.barrier()
+            if hasattr(cls, "logger") and cls.logger is not None:
+                cls.logger.info(
+                    "[Checkpoint debug] rank %s passed full-model barrier (elapsed %.2fs)",
+                    rank,
+                    time.time() - save_t0,
+                )
+        if hasattr(cls, "logger") and cls.logger is not None:
+            cls.logger.info(
+                "[Checkpoint debug] rank %s leaving FSDPStrategyBase.save_checkpoint in %.2fs",
+                rank,
+                time.time() - save_t0,
+            )
 
     @classmethod
     def load_checkpoint(
