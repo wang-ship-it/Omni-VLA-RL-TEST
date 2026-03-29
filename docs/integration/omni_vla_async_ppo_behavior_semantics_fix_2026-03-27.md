@@ -390,3 +390,161 @@ algorithm:
 - `rlinf/utils/chain_trace.py`
 - `examples/embodiment/config/libero_spatial_ppo_omni_vla_quickstart.yaml`
 
+---
+
+## 2026-03-30 补充诊断：中等版训练与 checkpoint/save
+
+### 1. 中等版训练配置的阶段性结论
+
+本轮在保持语义修复配置不变的前提下，采用了更积极但仍偏保守的训练配置：
+
+```yaml
+algorithm:
+  update_epoch: 2
+
+actor:
+  optim:
+    lr: 1.875e-7
+    value_lr: 2.6e-5
+```
+
+结合后续多轮 `env / rollout / train` 指标，阶段性结论为：
+
+- 训练主链路稳定
+- 语义对齐仍然成立
+- actor 更新强度已进入“有效但不过猛”的区间
+- critic 比此前更稳，`explained_variance` 整体改善
+- 当前问题主矛盾已不再是语义错位，而是 checkpoint/save 的工程稳定性
+
+### 2. 训练本体状态
+
+从多轮曲线看：
+
+- `train/actor/behav_approx_kl` 持续低位
+- `train/actor/proximal_ratio` 与 `train/actor/clipped_proximal_ratio` 长期在 `1.0` 附近
+- `train/actor/prox_old_logprob_gap_abs_mean` 维持在修复后的低位范围
+- `train/actor/clip_fraction` 大致在 `0.08-0.11`
+- `train/actor/behav_weight_mean ≈ 1`
+- `train/actor/behav_weight_gt_2_fraction = 0`
+- `train/actor/dropped_rollout_batches = 0`
+- `train/actor/current_version_minus_batch_version_max = 1`
+
+`env / rollout` 侧也没有看到：
+
+- backlog
+- rollout 权重滞后
+- returns 明显塌陷
+- episode 边界错乱
+
+因此可以认为：
+
+- 当前配置已可作为“可长跑”的训练配置
+- 训练本体与 rollout 主链路没有明显异常
+
+### 3. 视频复核
+
+对最新训练视频抽帧后，观察到：
+
+- 机械臂动作整体连贯
+- 没有明显高频抖动、原地抽搐或长时间卡死
+- 成功样本不是纯随机碰撞，更像是学到了一条基本正确的动作模式
+- 成功后画面继续渲染且出现 `termination: True`，与 eval/视频侧继续渲染设置相符，不构成异常
+
+阶段性判断：
+
+- 视频没有暴露新的策略异常
+- 当前策略已具备基本正确的任务行为，但仍有继续提纯空间
+
+### 4. checkpoint/save 现象
+
+后续排查发现，训练在触发 `save_interval` 时容易被误判为“卡死”，但新的日志显示：
+
+- `actor.save_checkpoint()` 实际可以成功返回
+- 在一次 `global_step = 2` 的测试中，runner 记录到：
+  - save dispatched
+  - save finished
+  - 总耗时约 `102.67s`
+
+这说明至少有一部分“卡死感”来自：
+
+- checkpoint/save 本身耗时较长
+- 保存期间主循环没有继续推进
+- 短时间内缺少额外日志，用户容易误判为 hang
+
+### 5. checkpoint/save 的真实工程风险
+
+虽然存在“保存很慢但能成功”的情况，但此前在 `save_interval = 30/40` 等场景下仍多次出现：
+
+- `Unsupported object type: <random int>`
+- metadata size 被读成超大值
+- 随后触发异常内存申请或 Gloo peer closed
+
+这类现象更像：
+
+- async env / rollout / actor 主通信仍在进行
+- checkpoint 流程插入了额外的分布式/collective 交互
+- 某些 recv 读到了被打乱的消息头或 metadata
+
+因此目前对 save 问题的判断应拆成两层：
+
+1. **保存能力本身**
+   - 已证明并非必然失败
+   - 至少在某些情况下可以成功完成，只是很慢
+2. **边训练边保存的时序安全性**
+   - 仍然存在工程风险
+   - 尚不能认定当前 async 流程下的任意保存点都稳定安全
+
+### 6. 新增诊断日志
+
+为进一步定位 save 具体卡点，新增了 checkpoint 调试日志，覆盖：
+
+- runner 进入 `_save_checkpoint()` 前后
+- runner dispatch `actor.save_checkpoint()` 后等待阶段
+- actor 侧进入 `FSDPModelManager.save_checkpoint()`
+- FSDP strategy 的：
+  - pre-save barrier
+  - 构建 training state
+  - `dcp.save(...)`
+  - post-save barrier
+  - full model state dict 导出
+
+同时还新增了：
+
+- `_save_checkpoint()` 返回后，runner 恢复主循环的日志
+- async PPO 每轮 step 开始时的日志
+
+相关文件：
+
+- `rlinf/runners/embodied_runner.py`
+- `rlinf/runners/async_ppo_embodied_runner.py`
+- `rlinf/hybrid_engines/fsdp/fsdp_model_manager.py`
+- `rlinf/hybrid_engines/fsdp/strategy/base.py`
+
+### 7. 调试过程中的一次额外问题
+
+在新增 checkpoint 调试日志时，曾一度误用不存在的 `self.rank` 字段，导致：
+
+- actor 在进入 `save_checkpoint()` 早期即抛出 `AttributeError`
+- Ray 杀死 actor
+- env / rollout 侧随后出现通信断裂与 `Unsupported object type`
+
+该问题是日志代码本身引入的二次故障，不是 checkpoint 主问题本身，随后已修正为读取已有 rank 字段。
+
+### 8. 当前建议
+
+当前建议将训练与 checkpoint 问题分开处理：
+
+- 训练配置可继续保持当前“中等版”
+- 若目标是稳定长跑，避免使用过小的 `save_interval`
+- 若目标是验证 checkpoint 是否能成功，优先使用极短 smoke test 并配合新的 debug 日志
+- 后续若要彻底解决 save 风险，优先方向应为：
+  - 在 save 前让 async env / rollout 通信 quiesce
+  - checkpoint 使用更独立的通信路径或同步屏障
+  - 对 metadata/object header 增加更严格的 sanity check
+
+当前阶段的综合结论是：
+
+- **训练已经基本稳定**
+- **视频没有暴露新的策略异常**
+- **save 能力不是完全坏的，但“边训练边保存”的时序安全性仍需进一步工程化修复**
+
