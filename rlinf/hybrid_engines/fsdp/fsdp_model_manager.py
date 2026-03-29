@@ -317,30 +317,31 @@ class FSDPModelManager:
             save_path: the directory to save checkpoint.
         """
         save_t0 = time.time()
+        actor_rank = getattr(self, "_rank", "unknown")
         self._logger.info(
             "[Checkpoint debug] rank %s entering FSDPModelManager.save_checkpoint(step=%s, path=%s)",
-            self.rank,
+            actor_rank,
             step,
             save_path,
         )
         if self.is_weight_offloaded:
             self._logger.info(
                 "[Checkpoint debug] rank %s reloading offloaded parameters before save",
-                self.rank,
+                actor_rank,
             )
             self.load_param_and_grad(self.device)
             self.is_weight_offloaded = False
         if self.is_optimizer_offloaded:
             self._logger.info(
                 "[Checkpoint debug] rank %s reloading offloaded optimizer before save",
-                self.rank,
+                actor_rank,
             )
             self.load_optimizer(self.device)
             self.is_optimizer_offloaded = False
 
         self._logger.info(
             "[Checkpoint debug] rank %s calling strategy.save_checkpoint after %.2fs",
-            self.rank,
+            actor_rank,
             time.time() - save_t0,
         )
         self._strategy.save_checkpoint(
@@ -351,7 +352,7 @@ class FSDPModelManager:
         )
         self._logger.info(
             "[Checkpoint debug] rank %s finished FSDPModelManager.save_checkpoint in %.2fs",
-            self.rank,
+            actor_rank,
             time.time() - save_t0,
         )
 
