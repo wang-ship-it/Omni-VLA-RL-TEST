@@ -56,6 +56,12 @@ class AsyncMultiStepRolloutWorker(MultiStepRolloutWorker):
             "generate task is not None but generate function is called."
         )
         self._stop_requested = False
+        self.logger.info(
+            "[Async rollout debug] starting generate loop on channels in=%s out=%s metric=%s",
+            input_channel._channel_name,
+            output_channel._channel_name,
+            metric_channel._channel_name,
+        )
         self._generate_task = asyncio.create_task(
             self._generate(input_channel, output_channel, metric_channel)
         )
@@ -70,12 +76,24 @@ class AsyncMultiStepRolloutWorker(MultiStepRolloutWorker):
         output_channel: Channel,
         metric_channel: Channel,
     ):
+        generate_round = 0
         while not self._stop_requested:
+            generate_round += 1
+            self.logger.info(
+                "[Async rollout debug] starting generate round %s on input channel %s",
+                generate_round,
+                input_channel._channel_name,
+            )
             if self._background_weight_sync_active:
                 await self._poll_background_weight_sync()
             await self.wait_if_stale()
             for _ in range(self.rollout_epoch):
                 await self.generate_one_epoch(input_channel, output_channel)
+            self.logger.info(
+                "[Async rollout debug] finished generate round %s on output channel %s",
+                generate_round,
+                output_channel._channel_name,
+            )
             if self.finished_episodes is not None:
                 self.finished_episodes += self.total_num_train_envs * self.rollout_epoch
             rollout_metrics = self.pop_execution_times()
@@ -116,6 +134,7 @@ class AsyncMultiStepRolloutWorker(MultiStepRolloutWorker):
 
     def stop(self):
         self._stop_requested = True
+        self.logger.info("[Async rollout debug] stop requested")
 
     def _start_background_weight_sync_if_needed(self):
         if (

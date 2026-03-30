@@ -38,6 +38,13 @@ class AsyncEnvWorker(EnvWorker):
             "Previous interact task is still running while a new interact call is made."
         )
         self._stop_requested = False
+        self.logger.info(
+            "[Async env debug] starting interact loop on channels in=%s out=%s metric=%s replay=%s",
+            input_channel._channel_name,
+            output_channel._channel_name,
+            metric_channel._channel_name,
+            replay_channel._channel_name if replay_channel is not None else "None",
+        )
         self._interact_task = asyncio.create_task(
             self._interact(
                 input_channel, output_channel, metric_channel, replay_channel
@@ -55,12 +62,24 @@ class AsyncEnvWorker(EnvWorker):
         metric_channel: Channel,
         replay_channel: Channel | None,
     ):
+        interact_round = 0
         while not self._stop_requested:
+            interact_round += 1
+            self.logger.info(
+                "[Async env debug] starting interact round %s on replay channel %s",
+                interact_round,
+                replay_channel._channel_name if replay_channel is not None else "None",
+            )
             env_metrics = await self._run_interact_once(
                 input_channel,
                 output_channel,
                 replay_channel,
                 cooperative_yield=True,
+            )
+            self.logger.info(
+                "[Async env debug] finished interact round %s on replay channel %s",
+                interact_round,
+                replay_channel._channel_name if replay_channel is not None else "None",
             )
 
             env_metrics = {f"env/{k}": v for k, v in env_metrics.items()}
@@ -77,3 +96,4 @@ class AsyncEnvWorker(EnvWorker):
 
     async def stop(self):
         self._stop_requested = True
+        self.logger.info("[Async env debug] stop requested")

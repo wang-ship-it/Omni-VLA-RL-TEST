@@ -195,9 +195,19 @@ class AsyncPPOEmbodiedRunner(EmbodiedRunner):
             )
             with self.timer("step"):
                 with self.timer("recv_rollout_trajectories"):
+                    self.logger.info(
+                        "[Runner debug] waiting for actor.recv_rollout_trajectories at step %s on channel generation %s",
+                        self.global_step + 1,
+                        self._channel_generation,
+                    )
                     self.actor.recv_rollout_trajectories(
                         input_channel=self.actor_channel
                     ).wait()
+                    self.logger.info(
+                        "[Runner debug] actor.recv_rollout_trajectories finished at step %s on channel generation %s",
+                        self.global_step + 1,
+                        self._channel_generation,
+                    )
 
                 if self.recompute_logprobs:
                     with self.timer("recompute_logprobs"):
