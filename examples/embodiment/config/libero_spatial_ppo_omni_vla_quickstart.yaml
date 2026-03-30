@@ -32,7 +32,7 @@ runner:
   val_check_interval: -1
   save_interval: 20
 
-  resume_dir: null
+  resume_dir: /root/data/kaelynwang/Omni_VLA/logs/20260330-10:57:40-libero_spatial_ppo_omni_vla_quickstart/libero_spatial_ppo_omni_vla_20260330-105752/checkpoints/global_step_60
   ckpt_path: null
 
 algorithm:
