@@ -24,6 +24,7 @@ class AsyncEnvWorker(EnvWorker):
     def __init__(self, cfg: DictConfig):
         super().__init__(cfg)
         self._interact_task: asyncio.Task = None
+        self._stop_requested = False
         assert not self.enable_offload, "Offload not supported in AsyncEnvWorker"
 
     async def interact(
@@ -36,6 +37,7 @@ class AsyncEnvWorker(EnvWorker):
         assert self._interact_task is None or self._interact_task.done(), (
             "Previous interact task is still running while a new interact call is made."
         )
+        self._stop_requested = False
         self._interact_task = asyncio.create_task(
             self._interact(
                 input_channel, output_channel, metric_channel, replay_channel
@@ -53,7 +55,7 @@ class AsyncEnvWorker(EnvWorker):
         metric_channel: Channel,
         replay_channel: Channel | None,
     ):
-        while True:
+        while not self._stop_requested:
             env_metrics = await self._run_interact_once(
                 input_channel,
                 output_channel,
@@ -74,5 +76,4 @@ class AsyncEnvWorker(EnvWorker):
             metric_channel.put(metrics, async_op=True)
 
     async def stop(self):
-        if self._interact_task is not None and not self._interact_task.done():
-            self._interact_task.cancel()
+        self._stop_requested = True

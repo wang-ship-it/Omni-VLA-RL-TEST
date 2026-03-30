@@ -26,6 +26,7 @@ class AsyncMultiStepRolloutWorker(MultiStepRolloutWorker):
     def __init__(self, cfg: DictConfig):
         super().__init__(cfg)
         self._generate_task: asyncio.Task = None
+        self._stop_requested = False
         self.staleness_threshold = cfg.algorithm.get("staleness_threshold", None)
         self.num_envs_per_stage = (
             self.cfg.env.train.total_num_envs
@@ -54,6 +55,7 @@ class AsyncMultiStepRolloutWorker(MultiStepRolloutWorker):
         assert self._generate_task is None or self._generate_task.done(), (
             "generate task is not None but generate function is called."
         )
+        self._stop_requested = False
         self._generate_task = asyncio.create_task(
             self._generate(input_channel, output_channel, metric_channel)
         )
@@ -68,7 +70,7 @@ class AsyncMultiStepRolloutWorker(MultiStepRolloutWorker):
         output_channel: Channel,
         metric_channel: Channel,
     ):
-        while True:
+        while not self._stop_requested:
             if self._background_weight_sync_active:
                 await self._poll_background_weight_sync()
             await self.wait_if_stale()
@@ -98,6 +100,8 @@ class AsyncMultiStepRolloutWorker(MultiStepRolloutWorker):
             "finished_episodes should be initialized."
         )
         while True:
+            if self._stop_requested:
+                return
             capacity = (
                 (self.staleness_threshold + self.version + 1)
                 * self.total_num_train_envs
@@ -111,8 +115,7 @@ class AsyncMultiStepRolloutWorker(MultiStepRolloutWorker):
             await asyncio.sleep(0.01)
 
     def stop(self):
-        if self._generate_task is not None and not self._generate_task.done():
-            self._generate_task.cancel()
+        self._stop_requested = True
 
     def _start_background_weight_sync_if_needed(self):
         if (
