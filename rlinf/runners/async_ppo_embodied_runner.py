@@ -47,14 +47,75 @@ class AsyncPPOEmbodiedRunner(EmbodiedRunner):
         run_timer=None,
     ):
         super().__init__(cfg, actor, rollout, env, critic, reward, run_timer)
-        self.env_metric_channel = Channel.create("EnvMetric")
-        self.rollout_metric_channel = Channel.create("RolloutMetric")
+        self._create_runtime_channels()
+        self._env_handle: Handle | None = None
+        self._rollout_handle: Handle | None = None
         self.recompute_logprobs = bool(self.cfg.rollout.get("recompute_logprobs", True))
 
         if self.cfg.runner.val_check_interval > 0:
             self.logger.warning(
                 "Validation check interval is set to a positive value, but validation is not implemented for AsyncPPOEmbodiedRunner, so validation will be skipped."
             )
+
+    def _create_runtime_channels(self) -> None:
+        self.env_channel = Channel.create("Env")
+        self.rollout_channel = Channel.create("Rollout")
+        self.actor_channel = Channel.create("Actor")
+        self.env_metric_channel = Channel.create("EnvMetric")
+        self.rollout_metric_channel = Channel.create("RolloutMetric")
+
+    def _start_async_pipeline(self) -> None:
+        self._env_handle = self.env.interact(
+            input_channel=self.rollout_channel,
+            output_channel=self.env_channel,
+            metric_channel=self.env_metric_channel,
+            replay_channel=self.actor_channel,
+        )
+        self._rollout_handle = self.rollout.generate(
+            input_channel=self.env_channel,
+            output_channel=self.rollout_channel,
+            metric_channel=self.rollout_metric_channel,
+        )
+
+    def _stop_async_pipeline(self, reason: str = "checkpoint") -> None:
+        if self._env_handle is None and self._rollout_handle is None:
+            return
+
+        if reason == "checkpoint":
+            self.logger.info(
+                "[Checkpoint debug] quiescing async env/rollout pipeline at step %s",
+                self.global_step,
+            )
+        else:
+            self.logger.info(
+                "Stopping async env/rollout pipeline at step %s for %s.",
+                self.global_step,
+                reason,
+            )
+        self.env.stop().wait()
+        self.rollout.stop().wait()
+
+        if self._env_handle is not None:
+            self._env_handle.wait()
+            self._env_handle = None
+        if self._rollout_handle is not None:
+            self._rollout_handle.wait()
+            self._rollout_handle = None
+
+    def _restart_async_pipeline(self) -> None:
+        self._create_runtime_channels()
+        self._start_async_pipeline()
+        self.logger.info(
+            "[Checkpoint debug] restarted async env/rollout pipeline at step %s",
+            self.global_step,
+        )
+
+    def _save_checkpoint(self):
+        self._stop_async_pipeline(reason="checkpoint")
+        try:
+            super()._save_checkpoint()
+        finally:
+            self._restart_async_pipeline()
 
     def get_rollout_metrics(self) -> tuple[dict, list[dict], dict, list[dict]]:
         results: list[dict] = []
@@ -121,17 +182,7 @@ class AsyncPPOEmbodiedRunner(EmbodiedRunner):
         self.rollout.set_global_step(self.global_step).wait()
         self.update_rollout_weights()
 
-        env_handle: Handle = self.env.interact(
-            input_channel=self.rollout_channel,
-            output_channel=self.env_channel,
-            metric_channel=self.env_metric_channel,
-            replay_channel=self.actor_channel,
-        )
-        rollout_handle: Handle = self.rollout.generate(
-            input_channel=self.env_channel,
-            output_channel=self.rollout_channel,
-            metric_channel=self.rollout_metric_channel,
-        )
+        self._start_async_pipeline()
 
         while self.global_step < self.max_steps:
             self.logger.info(
@@ -283,8 +334,4 @@ class AsyncPPOEmbodiedRunner(EmbodiedRunner):
         self.log_queue.join()
         self.log_thread.join(timeout=1.0)
 
-        self.env.stop().wait()
-        self.rollout.stop().wait()
-
-        env_handle.wait()
-        rollout_handle.wait()
+        self._stop_async_pipeline(reason="shutdown")

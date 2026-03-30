@@ -51,7 +51,7 @@ class AsyncMultiStepRolloutWorker(MultiStepRolloutWorker):
         output_channel: Channel,
         metric_channel: Channel,
     ):
-        assert self._generate_task is None, (
+        assert self._generate_task is None or self._generate_task.done(), (
             "generate task is not None but generate function is called."
         )
         self._generate_task = asyncio.create_task(
