@@ -106,6 +106,7 @@ class AsyncPPOEmbodiedRunner(EmbodiedRunner):
 
     def _restart_async_pipeline(self) -> None:
         self._channel_generation += 1
+        self.rollout.reset_runtime_after_checkpoint().wait()
         self._create_runtime_channels()
         self._start_async_pipeline()
         self.logger.info(

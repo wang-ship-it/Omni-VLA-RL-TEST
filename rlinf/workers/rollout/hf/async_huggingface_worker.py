@@ -117,6 +117,7 @@ class AsyncMultiStepRolloutWorker(MultiStepRolloutWorker):
         assert self.finished_episodes is not None, (
             "finished_episodes should be initialized."
         )
+        stale_logged = False
         while True:
             if self._stop_requested:
                 return
@@ -130,11 +131,33 @@ class AsyncMultiStepRolloutWorker(MultiStepRolloutWorker):
                 <= capacity
             ):
                 break
+            if not stale_logged:
+                self.logger.info(
+                    "[Async rollout debug] waiting due to staleness: version=%s, finished_episodes=%s, capacity=%s",
+                    self.version,
+                    self.finished_episodes,
+                    capacity,
+                )
+                stale_logged = True
             await asyncio.sleep(0.01)
 
     def stop(self):
         self._stop_requested = True
         self.logger.info("[Async rollout debug] stop requested")
+
+    def reset_runtime_after_checkpoint(self):
+        baseline_finished_episodes = (
+            self.version * self.total_num_train_envs * self.rollout_epoch
+        )
+        self.finished_episodes = baseline_finished_episodes
+        self._weight_sync_requested = False
+        self._weight_sync_work = None
+        self.requested_weight_version = float(self.version)
+        self.logger.info(
+            "[Async rollout debug] reset runtime after checkpoint: version=%s, finished_episodes=%s",
+            self.version,
+            self.finished_episodes,
+        )
 
     def _start_background_weight_sync_if_needed(self):
         if (
