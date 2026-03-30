@@ -47,6 +47,7 @@ class AsyncPPOEmbodiedRunner(EmbodiedRunner):
         run_timer=None,
     ):
         super().__init__(cfg, actor, rollout, env, critic, reward, run_timer)
+        self._channel_generation = 0
         self._create_runtime_channels()
         self._env_handle: Handle | None = None
         self._rollout_handle: Handle | None = None
@@ -58,11 +59,12 @@ class AsyncPPOEmbodiedRunner(EmbodiedRunner):
             )
 
     def _create_runtime_channels(self) -> None:
-        self.env_channel = Channel.create("Env")
-        self.rollout_channel = Channel.create("Rollout")
-        self.actor_channel = Channel.create("Actor")
-        self.env_metric_channel = Channel.create("EnvMetric")
-        self.rollout_metric_channel = Channel.create("RolloutMetric")
+        suffix = f"-ckptgen-{self._channel_generation}"
+        self.env_channel = Channel.create(f"Env{suffix}")
+        self.rollout_channel = Channel.create(f"Rollout{suffix}")
+        self.actor_channel = Channel.create(f"Actor{suffix}")
+        self.env_metric_channel = Channel.create(f"EnvMetric{suffix}")
+        self.rollout_metric_channel = Channel.create(f"RolloutMetric{suffix}")
 
     def _start_async_pipeline(self) -> None:
         self._env_handle = self.env.interact(
@@ -103,11 +105,13 @@ class AsyncPPOEmbodiedRunner(EmbodiedRunner):
             self._rollout_handle = None
 
     def _restart_async_pipeline(self) -> None:
+        self._channel_generation += 1
         self._create_runtime_channels()
         self._start_async_pipeline()
         self.logger.info(
-            "[Checkpoint debug] restarted async env/rollout pipeline at step %s",
+            "[Checkpoint debug] restarted async env/rollout pipeline at step %s with channel generation %s",
             self.global_step,
+            self._channel_generation,
         )
 
     def _save_checkpoint(self):
