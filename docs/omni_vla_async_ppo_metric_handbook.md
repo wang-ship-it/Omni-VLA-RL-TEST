@@ -1,3 +1,10 @@
+> 状态说明
+>
+> - 这篇文档仍然保留，作为 `Omni-VLA async PPO` 的指标观察与训练判读手册。
+> - 如果你想先快速了解 Omni-VLA 适配 RLinf 的全流程，请先读：
+>   [`docs/integration/omni_vla_rlinf_integration_full_journey.md`](/Users/kaelynwang/Desktop/kaelynwang/Omni_VLA/docs/integration/omni_vla_rlinf_integration_full_journey.md)
+> - 如果你已经确认问题集中在 async PPO 训练判读，而不是接入或 checkpoint 工程问题，再读本文最合适。
+
 # Omni-VLA Async PPO 指标观察手册
 
 如果当前 run 的核心异常表现为：

@@ -1,3 +1,10 @@
+> 状态说明
+>
+> - 本文档保留为 `openpi` 在 RLinf 中集成方式的背景分析材料。
+> - 其主要结论已被吸收到总览文档：
+>   [`docs/integration/omni_vla_rlinf_integration_full_journey.md`](/Users/kaelynwang/Desktop/kaelynwang/Omni_VLA/docs/integration/omni_vla_rlinf_integration_full_journey.md)
+> - 如果你当前关心的是“为什么 Omni-VLA 不能直接复用 openpi 集成思路”，可将本文作为背景附录查阅。
+
 # OpenPI 在 RLinf 中的集成分析
 
 本文档分析了官方 `openpi` 包目前是如何集成到 `RLinf` 框架中的。此分析是将其替换为优化后的 `Omni_VLA` 的先决条件。

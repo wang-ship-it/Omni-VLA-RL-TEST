@@ -1,3 +1,10 @@
+> 状态说明
+>
+> - 本文档保留为 patch 级改动索引，不再作为 Omni-VLA 适配 RLinf 的主入口文档。
+> - 如果你想先了解完整背景、时间线和结论，请先读：
+>   [`docs/integration/omni_vla_rlinf_integration_full_journey.md`](/Users/kaelynwang/Desktop/kaelynwang/Omni_VLA/docs/integration/omni_vla_rlinf_integration_full_journey.md)
+> - 需要追具体代码改动时，再把本文当作补充索引使用。
+
 # Git 代码改动文档
 
 > 仅记录 `.py` 文件的改动，按时间从新到旧排列。

@@ -1,3 +1,10 @@
+> 状态说明
+>
+> - 本文档记录的是 Omni-VLA 接入 RLinf 的早期阶段性报告，现已被总览文档吸收。
+> - 建议优先阅读：
+>   [`docs/integration/omni_vla_rlinf_integration_full_journey.md`](/Users/kaelynwang/Desktop/kaelynwang/Omni_VLA/docs/integration/omni_vla_rlinf_integration_full_journey.md)
+> - 若你想查看“第一次接入”时的原始里程碑表达和假设，再回看本文。
+
 # Omni_VLA 集成到 RLinf - 第 3 步报告
 
 ## 概述

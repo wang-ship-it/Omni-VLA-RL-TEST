@@ -1,3 +1,10 @@
+> 状态说明
+>
+> - 本文档保留为 Omni-VLA 相对原始 openpi 的架构与训练优化分析材料。
+> - 其高价值结论已整合进总览文档：
+>   [`docs/integration/omni_vla_rlinf_integration_full_journey.md`](/Users/kaelynwang/Desktop/kaelynwang/Omni_VLA/docs/integration/omni_vla_rlinf_integration_full_journey.md)
+> - 如果你需要回顾 Omni-VLA 的原始模型结构差异与训练优化背景，本文仍然适合作为附录查阅。
+
 # Omni_VLA (InternVLA) 优化分析报告
 
 本文档详细分析了 `Omni_VLA` 项目相对于原始 `openpi` 的架构改进与代码优化。此分析基于 `Omni_VLA` 目录下的代码和文档。

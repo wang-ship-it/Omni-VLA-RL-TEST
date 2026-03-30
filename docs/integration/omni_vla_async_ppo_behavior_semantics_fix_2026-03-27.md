@@ -1,3 +1,10 @@
+> 状态说明
+>
+> - 这篇文档仍然是 `Omni-VLA async PPO 行为语义错位` 的主专题记录，建议继续保留。
+> - 如果你想先了解整个适配过程，请先读总览文档：
+>   [`docs/integration/omni_vla_rlinf_integration_full_journey.md`](/Users/kaelynwang/Desktop/kaelynwang/Omni_VLA/docs/integration/omni_vla_rlinf_integration_full_journey.md)
+> - 如果你当前的核心问题是 `behav_approx_kl`、`proximal_*`、`old/current logprob` 口径异常，再回到本文做专题排查。
+
 # Omni-VLA Async PPO 行为语义错位定位与修复（2026-03-27）
 
 ## 结论摘要
@@ -547,4 +554,3 @@ actor:
 - **训练已经基本稳定**
 - **视频没有暴露新的策略异常**
 - **save 能力不是完全坏的，但“边训练边保存”的时序安全性仍需进一步工程化修复**
-

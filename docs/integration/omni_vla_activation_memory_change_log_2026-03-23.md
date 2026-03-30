@@ -1,3 +1,10 @@
+> 状态说明
+>
+> - 本文档保留为 activation memory、`gradient checkpointing` 与 `use_cache` 联动修复的专项变更记录。
+> - 其核心结论已吸收进总览文档：
+>   [`docs/integration/omni_vla_rlinf_integration_full_journey.md`](/Users/kaelynwang/Desktop/kaelynwang/Omni_VLA/docs/integration/omni_vla_rlinf_integration_full_journey.md)
+> - 如果你正在排查显存策略、checkpointing 行为或 cache 语义问题，本文仍值得单独查阅。
+
 # OmniVLA 激活显存改动记录（2026-03-23）
 
 ## 目标
