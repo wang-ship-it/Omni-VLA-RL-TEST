@@ -121,6 +121,38 @@ class AsyncPPOEmbodiedRunner(EmbodiedRunner):
         finally:
             self._restart_async_pipeline()
 
+    def _wait_with_pipeline_heartbeat(
+        self,
+        handle: Handle,
+        *,
+        step: int,
+        wait_name: str,
+        heartbeat_interval_s: float = 30.0,
+    ):
+        last_log_time = time.time()
+        while not handle.done():
+            now = time.time()
+            if now - last_log_time >= heartbeat_interval_s:
+                actor_qsize = self.actor_channel.qsize()
+                env_done = self._env_handle.done() if self._env_handle is not None else True
+                rollout_done = (
+                    self._rollout_handle.done()
+                    if self._rollout_handle is not None
+                    else True
+                )
+                self.logger.info(
+                    "[Runner debug] still waiting for %s at step %s on channel generation %s: actor_channel_qsize=%s, env_handle_done=%s, rollout_handle_done=%s",
+                    wait_name,
+                    step,
+                    self._channel_generation,
+                    actor_qsize,
+                    env_done,
+                    rollout_done,
+                )
+                last_log_time = now
+            time.sleep(1.0)
+        return handle.wait()
+
     def get_rollout_metrics(self) -> tuple[dict, list[dict], dict, list[dict]]:
         results: list[dict] = []
         while True:
@@ -200,9 +232,14 @@ class AsyncPPOEmbodiedRunner(EmbodiedRunner):
                         self.global_step + 1,
                         self._channel_generation,
                     )
-                    self.actor.recv_rollout_trajectories(
+                    recv_handle = self.actor.recv_rollout_trajectories(
                         input_channel=self.actor_channel
-                    ).wait()
+                    )
+                    self._wait_with_pipeline_heartbeat(
+                        recv_handle,
+                        step=self.global_step + 1,
+                        wait_name="actor.recv_rollout_trajectories",
+                    )
                     self.logger.info(
                         "[Runner debug] actor.recv_rollout_trajectories finished at step %s on channel generation %s",
                         self.global_step + 1,
