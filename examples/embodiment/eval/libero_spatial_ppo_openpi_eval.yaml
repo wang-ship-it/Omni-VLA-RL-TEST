@@ -109,7 +109,7 @@ rollout:
 
   model:
     model_path: "/data/models/RLinf-Pi0-SFT-Spatial-Object-Goal"
-    precision: ${actor.model.precision}
+    precision: 32
 
 actor:
   group_name: "ActorGroup"
@@ -138,9 +138,9 @@ actor:
   fsdp_config:
     strategy: "fsdp"
     mixed_precision:
-      param_dtype: ${actor.model.precision}
-      reduce_dtype: ${actor.model.precision}
-      buffer_dtype: ${actor.model.precision}
+      param_dtype: 32
+      reduce_dtype: 32
+      buffer_dtype: 32
 
 reward:
   use_reward_model: False
