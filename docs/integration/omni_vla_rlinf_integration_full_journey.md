@@ -403,6 +403,7 @@ async PPO 链路长、参与方多，只盯单一指标很容易误判。尤其�
 
 - [`docs/integration/omni_vla_async_ppo_behavior_semantics_fix_2026-03-27.md`](/Users/kaelynwang/Desktop/kaelynwang/Omni_VLA/docs/integration/omni_vla_async_ppo_behavior_semantics_fix_2026-03-27.md)
 - [`docs/omni_vla_async_ppo_metric_handbook.md`](/Users/kaelynwang/Desktop/kaelynwang/Omni_VLA/docs/omni_vla_async_ppo_metric_handbook.md)
+- [`docs/integration/omni_vla_libero_spatial_ppo_eval_summary_2026-03-31.md`](/Users/kaelynwang/Desktop/kaelynwang/Omni_VLA/docs/integration/omni_vla_libero_spatial_ppo_eval_summary_2026-03-31.md)
 
 ### 已被本文吸收的历史材料
 

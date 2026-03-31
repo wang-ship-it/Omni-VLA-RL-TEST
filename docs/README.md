@@ -7,6 +7,7 @@
 1. [`docs/integration/omni_vla_rlinf_integration_full_journey.md`](/Users/kaelynwang/Desktop/kaelynwang/Omni_VLA/docs/integration/omni_vla_rlinf_integration_full_journey.md)
 2. [`docs/integration/omni_vla_async_ppo_behavior_semantics_fix_2026-03-27.md`](/Users/kaelynwang/Desktop/kaelynwang/Omni_VLA/docs/integration/omni_vla_async_ppo_behavior_semantics_fix_2026-03-27.md)
 3. [`docs/omni_vla_async_ppo_metric_handbook.md`](/Users/kaelynwang/Desktop/kaelynwang/Omni_VLA/docs/omni_vla_async_ppo_metric_handbook.md)
+4. [`docs/integration/omni_vla_libero_spatial_ppo_eval_summary_2026-03-31.md`](/Users/kaelynwang/Desktop/kaelynwang/Omni_VLA/docs/integration/omni_vla_libero_spatial_ppo_eval_summary_2026-03-31.md)
 
 ## 文档分层
 
@@ -22,6 +23,8 @@
   - Async PPO 行为语义错位问题的专题定位与修复记录。
 - [`docs/omni_vla_async_ppo_metric_handbook.md`](/Users/kaelynwang/Desktop/kaelynwang/Omni_VLA/docs/omni_vla_async_ppo_metric_handbook.md)
   - Async PPO 指标观察与训练判读手册。
+- [`docs/integration/omni_vla_libero_spatial_ppo_eval_summary_2026-03-31.md`](/Users/kaelynwang/Desktop/kaelynwang/Omni_VLA/docs/integration/omni_vla_libero_spatial_ppo_eval_summary_2026-03-31.md)
+  - `libero_spatial` 上基础模型与 PPO checkpoints 的标准化 eval 结果整理，以及当前最佳 checkpoint 区间和下一轮调参建议。
 
 ### 原始排查 / 历史记录
 
