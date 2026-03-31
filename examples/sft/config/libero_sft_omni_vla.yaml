@@ -43,7 +43,7 @@ actor:
 
   model:
     precision: null
-    model_path: "/path/to/omni-vla-model"
+    model_path: "/root/data/models/lerobot"
     num_action_chunks: 4 # interface for the env
     add_value_head: False
     omni_vla:
