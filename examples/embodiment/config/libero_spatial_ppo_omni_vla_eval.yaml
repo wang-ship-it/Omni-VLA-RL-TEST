@@ -32,8 +32,8 @@ runner:
   val_check_interval: -1
   save_interval: 25
 
-  resume_dir: /root/data/kaelynwang/Omni_VLA/logs/20260330-16:08:00-libero_spatial_ppo_omni_vla_quickstart/libero_spatial_ppo_omni_vla_20260330-160812/checkpoints/global_step_340  # Set to checkpoint directory path for resuming
-  ckpt_path: /root/data/kaelynwang/Omni_VLA/logs/20260330-16:08:00-libero_spatial_ppo_omni_vla_quickstart/libero_spatial_ppo_omni_vla_20260330-160812/checkpoints/global_step_340/actor/model_state_dict/full_weights.pt   # Set to .pt checkpoint path for evaluation
+  resume_dir: /root/data/kaelynwang/Omni_VLA/logs/20260330-16:08:00-libero_spatial_ppo_omni_vla_quickstart/libero_spatial_ppo_omni_vla_20260330-160812/checkpoints/global_step_400  # Set to checkpoint directory path for resuming
+  ckpt_path: /root/data/kaelynwang/Omni_VLA/logs/20260330-16:08:00-libero_spatial_ppo_omni_vla_quickstart/libero_spatial_ppo_omni_vla_20260330-160812/checkpoints/global_step_400/actor/model_state_dict/full_weights.pt   # Set to .pt checkpoint path for evaluation
 
 algorithm:
   normalize_advantages: True
@@ -112,8 +112,8 @@ rollout:
 actor:
   group_name: "ActorGroup"
   training_backend: "fsdp"
-  micro_batch_size: 1
-  global_batch_size: 2
+  micro_batch_size: 64
+  global_batch_size: 128
   seed: 42
   enable_offload: False
 
