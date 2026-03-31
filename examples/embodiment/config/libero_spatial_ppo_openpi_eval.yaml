@@ -92,7 +92,7 @@ env:
     ignore_terminations: False
     group_size: 1
     max_episode_steps: 240 # max episode steps for truncation
-    max_steps_per_rollout_epoch: 2400
+    max_steps_per_rollout_epoch: 1200
     use_fixed_reset_state_ids: True
     use_ordered_reset_state_ids: True
     reset_gripper_open: False
