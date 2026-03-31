@@ -32,8 +32,8 @@ runner:
   val_check_interval: -1
   save_interval: 25
 
-  resume_dir: /root/data/kaelynwang/Omni_VLA/logs/20260330-16:08:00-libero_spatial_ppo_omni_vla_quickstart/libero_spatial_ppo_omni_vla_20260330-160812/checkpoints/global_step_400  # Set to checkpoint directory path for resuming
-  ckpt_path: /root/data/kaelynwang/Omni_VLA/logs/20260330-16:08:00-libero_spatial_ppo_omni_vla_quickstart/libero_spatial_ppo_omni_vla_20260330-160812/checkpoints/global_step_400/actor/model_state_dict/full_weights.pt   # Set to .pt checkpoint path for evaluation
+  resume_dir: /root/data/kaelynwang/Omni_VLA/logs/20260330-16:08:00-libero_spatial_ppo_omni_vla_quickstart/libero_spatial_ppo_omni_vla_20260330-160812/checkpoints/global_step_160  # Set to checkpoint directory path for resuming
+  ckpt_path: /root/data/kaelynwang/Omni_VLA/logs/20260330-16:08:00-libero_spatial_ppo_omni_vla_quickstart/libero_spatial_ppo_omni_vla_20260330-160812/checkpoints/global_step_160/actor/model_state_dict/full_weights.pt   # Set to .pt checkpoint path for evaluation
 
 algorithm:
   normalize_advantages: True
@@ -84,12 +84,12 @@ env:
     total_num_envs: 10
 
   eval:
-    total_num_envs: 10
+    total_num_envs: 20
     auto_reset: True
     ignore_terminations: True
     group_size: 1
     max_episode_steps: 240
-    max_steps_per_rollout_epoch: 2400
+    max_steps_per_rollout_epoch: 1200
     use_fixed_reset_state_ids: True
     use_ordered_reset_state_ids: True
     reset_gripper_open: False
