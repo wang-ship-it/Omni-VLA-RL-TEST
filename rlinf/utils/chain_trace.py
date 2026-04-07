@@ -7,7 +7,7 @@ import torch
 
 
 def get_chain_trace_config(cfg) -> dict[str, Any]:
-    algorithm_cfg = cfg.algorithm
+    algorithm_cfg = cfg.get("algorithm", cfg)
     thresholds_cfg = algorithm_cfg.get("debug_chain_trace_thresholds", {})
     return {
         "enabled": bool(algorithm_cfg.get("debug_chain_trace", False)),
@@ -29,7 +29,7 @@ def get_chain_trace_config(cfg) -> dict[str, Any]:
 
 
 def get_pipeline_trace_config(cfg) -> dict[str, Any]:
-    algorithm_cfg = cfg.algorithm
+    algorithm_cfg = cfg.get("algorithm", cfg)
     return {
         "enabled": bool(algorithm_cfg.get("debug_pipeline_trace", False)),
         "rank0_only": bool(algorithm_cfg.get("debug_pipeline_trace_rank0_only", True)),
