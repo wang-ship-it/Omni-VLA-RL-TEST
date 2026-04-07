@@ -21,6 +21,7 @@ from omegaconf.omegaconf import DictConfig
 from rlinf.runners.embodied_runner import EmbodiedRunner
 from rlinf.scheduler import Channel
 from rlinf.scheduler import WorkerGroupFuncResult as Handle
+from rlinf.utils.chain_trace import get_pipeline_trace_config
 from rlinf.utils.runner_utils import check_progress
 
 if TYPE_CHECKING:
@@ -52,6 +53,7 @@ class AsyncPPOEmbodiedRunner(EmbodiedRunner):
         self._env_handle: Handle | None = None
         self._rollout_handle: Handle | None = None
         self.recompute_logprobs = bool(self.cfg.rollout.get("recompute_logprobs", True))
+        self._pipeline_trace_cfg = get_pipeline_trace_config(cfg)
 
         if self.cfg.runner.val_check_interval > 0:
             self.logger.warning(
@@ -226,6 +228,15 @@ class AsyncPPOEmbodiedRunner(EmbodiedRunner):
                 "[Runner debug] starting async PPO step %s",
                 self.global_step + 1,
             )
+            if self._pipeline_trace_cfg["enabled"]:
+                self.logger.info(
+                    "[Runner pipeline trace] step=%s actor_channel=%s env_channel=%s rollout_channel=%s generation=%s",
+                    self.global_step + 1,
+                    self.actor_channel.qsize(),
+                    self.env_channel.qsize(),
+                    self.rollout_channel.qsize(),
+                    self._channel_generation,
+                )
             with self.timer("step"):
                 with self.timer("recv_rollout_trajectories"):
                     self.logger.info(

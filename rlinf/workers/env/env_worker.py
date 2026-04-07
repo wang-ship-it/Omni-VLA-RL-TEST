@@ -32,6 +32,12 @@ from rlinf.envs.action_utils import prepare_actions
 from rlinf.envs.wrappers import RecordVideo
 from rlinf.scheduler import Channel, Cluster, Worker
 from rlinf.utils.comm_mapping import CommMapper
+from rlinf.utils.chain_trace import (
+    format_block,
+    get_pipeline_trace_config,
+    should_enable_pipeline_trace,
+    summarize_value,
+)
 from rlinf.utils.metric_utils import compute_split_num
 from rlinf.utils.nested_dict_process import update_nested_cfg
 from rlinf.utils.placement import HybridComponentPlacement
@@ -79,6 +85,17 @@ class EnvWorker(Worker):
             // self.cfg.actor.model.num_action_chunks
         )
         self.actor_split_num = self.get_actor_split_num()
+        self._pipeline_trace_enabled = should_enable_pipeline_trace(cfg, self._rank)
+        self._pipeline_trace_cfg = get_pipeline_trace_config(cfg)
+        self._pipeline_trace_counter = 0
+
+    def _should_log_pipeline_trace(self) -> bool:
+        if not self._pipeline_trace_enabled:
+            return False
+        self._pipeline_trace_counter += 1
+        return (
+            self._pipeline_trace_counter % self._pipeline_trace_cfg["log_every"] == 0
+        )
 
     def init_worker(self):
         self.dst_ranks = {
@@ -702,6 +719,21 @@ class EnvWorker(Worker):
                     rollout_result = self.recv_rollout_results(
                         input_channel, mode="train"
                     )
+                    trace_this_step = self._should_log_pipeline_trace()
+                    if trace_this_step:
+                        self.logger.info(
+                            format_block(
+                                "PIPELINE TRACE [ENV RECV ROLLOUT]",
+                                [
+                                    f"rank={self._rank} epoch={epoch} stage_id={stage_id}",
+                                    f"curr_obs={summarize_value(curr_obs, max_items=self._pipeline_trace_cfg['max_items'])}",
+                                    f"rollout_actions={summarize_value(rollout_result.actions, max_items=self._pipeline_trace_cfg['max_items'])}",
+                                    f"rollout_prev_logprobs={summarize_value(rollout_result.prev_logprobs, max_items=self._pipeline_trace_cfg['max_items'])}",
+                                    f"rollout_prev_values={summarize_value(rollout_result.prev_values, max_items=self._pipeline_trace_cfg['max_items'])}",
+                                    f"rollout_versions={summarize_value(rollout_result.versions, max_items=self._pipeline_trace_cfg['max_items'])}",
+                                ],
+                            )
+                        )
                     rewards = self.compute_bootstrap_rewards(
                         env_output, rollout_result.bootstrap_values
                     )
@@ -729,6 +761,21 @@ class EnvWorker(Worker):
                     env_output, env_info = self.env_interact_step(
                         rollout_result.actions, stage_id
                     )
+                    if trace_this_step:
+                        self.logger.info(
+                            format_block(
+                                "PIPELINE TRACE [ENV STEP]",
+                                [
+                                    f"rank={self._rank} epoch={epoch} stage_id={stage_id}",
+                                    f"rewards={summarize_value(rewards, max_items=self._pipeline_trace_cfg['max_items'])}",
+                                    f"next_obs={summarize_value(env_output.obs, max_items=self._pipeline_trace_cfg['max_items'])}",
+                                    f"dones={summarize_value(env_output.dones, max_items=self._pipeline_trace_cfg['max_items'])}",
+                                    f"terminations={summarize_value(env_output.terminations, max_items=self._pipeline_trace_cfg['max_items'])}",
+                                    f"truncations={summarize_value(env_output.truncations, max_items=self._pipeline_trace_cfg['max_items'])}",
+                                    f"env_info={summarize_value(env_info, max_items=self._pipeline_trace_cfg['max_items'])}",
+                                ],
+                            )
+                        )
                     env_batch = env_output.to_dict()
                     self.send_env_batch(
                         output_channel,

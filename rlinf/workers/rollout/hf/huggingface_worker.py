@@ -32,9 +32,12 @@ from rlinf.utils.comm_mapping import CommMapper
 from rlinf.utils.chain_trace import (
     format_block,
     get_chain_trace_config,
+    get_pipeline_trace_config,
     rowwise_abs_mean,
     select_topk_indices,
     should_enable_chain_trace,
+    should_enable_pipeline_trace,
+    summarize_value,
     tensor_stats_str,
     trace_id_to_str,
 )
@@ -95,6 +98,17 @@ class MultiStepRolloutWorker(Worker):
         self.requested_weight_version = 0
         self.finished_episodes = None
         self._debug_trace_batch_counter = 0
+        self._pipeline_trace_enabled = should_enable_pipeline_trace(cfg, self._rank)
+        self._pipeline_trace_cfg = get_pipeline_trace_config(cfg)
+        self._pipeline_trace_counter = 0
+
+    def _should_log_pipeline_trace(self) -> bool:
+        if not self._pipeline_trace_enabled:
+            return False
+        self._pipeline_trace_counter += 1
+        return (
+            self._pipeline_trace_counter % self._pipeline_trace_cfg["log_every"] == 0
+        )
 
     def init_worker(self):
         rollout_model_config = copy.deepcopy(self.cfg.actor.model)
@@ -541,6 +555,23 @@ class MultiStepRolloutWorker(Worker):
             for _ in range(self.num_pipeline_stages):
                 env_output = await self.recv_env_output(input_channel)
                 actions, result = self.predict(env_output["obs"])
+                if self._should_log_pipeline_trace():
+                    bootstrap_values = self.get_bootstrap_values(
+                        env_output.get("final_obs", None)
+                    )
+                    self.logger.info(
+                        format_block(
+                            "PIPELINE TRACE [ROLLOUT]",
+                            [
+                                f"rank={self._rank} version={int(self.version)} applied_weight_version={int(self.applied_weight_version)}",
+                                f"env_obs={summarize_value(env_output.get('obs'), max_items=self._pipeline_trace_cfg['max_items'])}",
+                                f"actions={summarize_value(actions, max_items=self._pipeline_trace_cfg['max_items'])}",
+                                f"prev_logprobs={summarize_value(result.get('prev_logprobs'), max_items=self._pipeline_trace_cfg['max_items'])}",
+                                f"prev_values={summarize_value(result.get('prev_values'), max_items=self._pipeline_trace_cfg['max_items'])}",
+                                f"bootstrap_values={summarize_value(bootstrap_values, max_items=self._pipeline_trace_cfg['max_items'])}",
+                            ],
+                        )
+                    )
 
                 save_flags = None
                 if result.get("expert_label_flag", False):
@@ -661,7 +692,19 @@ class MultiStepRolloutWorker(Worker):
                 f"got {actual_size}."
             )
             obs_batches.append(obs_batch)
-        return self._merge_obs_batches(obs_batches)
+        merged = self._merge_obs_batches(obs_batches)
+        if self._pipeline_trace_enabled and mode == "train":
+            self.logger.info(
+                format_block(
+                    "PIPELINE TRACE [ROLLOUT RECV ENV]",
+                    [
+                        f"rank={self._rank} mode={mode} version={int(self.version)} src={src_ranks_and_sizes}",
+                        f"merged_obs={summarize_value(merged.get('obs'), max_items=self._pipeline_trace_cfg['max_items'])}",
+                        f"merged_final_obs={summarize_value(merged.get('final_obs'), max_items=self._pipeline_trace_cfg['max_items'])}",
+                    ],
+                )
+            )
+        return merged
 
     def _split_actions(
         self, actions: torch.Tensor | np.ndarray, sizes: list[int]

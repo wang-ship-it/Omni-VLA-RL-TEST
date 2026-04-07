@@ -51,6 +51,12 @@ from rlinf.utils.data_iter_utils import (
     get_seqlen_balanced_partitions,
     split_dynamic_batch_size,
 )
+from rlinf.utils.chain_trace import (
+    format_block,
+    get_pipeline_trace_config,
+    should_enable_pipeline_trace,
+    summarize_value,
+)
 from rlinf.utils.distributed import (
     RolloutDataBalance,
     all_reduce_dict,
@@ -1023,8 +1029,19 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
             "received_rollout_version_max": 0.0,
             "received_rollout_version_gap": 0.0,
         }
+        self._pipeline_trace_enabled = should_enable_pipeline_trace(cfg, self._rank)
+        self._pipeline_trace_cfg = get_pipeline_trace_config(cfg)
+        self._pipeline_trace_counter = 0
         if self.enable_sft_co_train:
             self._build_sft_data_loader()
+
+    def _should_log_pipeline_trace(self) -> bool:
+        if not self._pipeline_trace_enabled:
+            return False
+        self._pipeline_trace_counter += 1
+        return (
+            self._pipeline_trace_counter % self._pipeline_trace_cfg["log_every"] == 0
+        )
 
     def _setup_rollout_weight_dst_ranks(self) -> None:
         """
@@ -1146,6 +1163,22 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
                 received_rollout_version_max - received_rollout_version_min
             ),
         }
+        if self._should_log_pipeline_trace():
+            self.logger.info(
+                format_block(
+                    "PIPELINE TRACE [ACTOR RECV TRAJ]",
+                    [
+                        f"rank={self._rank} version={int(self.version)} split_num={split_num}",
+                        f"receive_stats={self._last_rollout_receive_stats}",
+                        f"batch_actions={summarize_value(self.rollout_batch.get('actions'), max_items=self._pipeline_trace_cfg['max_items'])}",
+                        f"batch_rewards={summarize_value(self.rollout_batch.get('rewards'), max_items=self._pipeline_trace_cfg['max_items'])}",
+                        f"batch_dones={summarize_value(self.rollout_batch.get('dones'), max_items=self._pipeline_trace_cfg['max_items'])}",
+                        f"batch_terminations={summarize_value(self.rollout_batch.get('terminations'), max_items=self._pipeline_trace_cfg['max_items'])}",
+                        f"batch_truncations={summarize_value(self.rollout_batch.get('truncations'), max_items=self._pipeline_trace_cfg['max_items'])}",
+                        f"batch_versions={summarize_value(self.rollout_batch.get('versions'), max_items=self._pipeline_trace_cfg['max_items'])}",
+                    ],
+                )
+            )
 
     def get_rollout_receive_stats(self) -> dict[str, float]:
         return dict(self._last_rollout_receive_stats)

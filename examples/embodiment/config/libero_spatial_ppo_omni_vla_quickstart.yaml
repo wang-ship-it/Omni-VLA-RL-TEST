@@ -32,7 +32,7 @@ runner:
   val_check_interval: -1
   save_interval: 20
 
-  resume_dir: /root/data/kaelynwang/Omni_VLA/logs/20260330-10:57:40-libero_spatial_ppo_omni_vla_quickstart/libero_spatial_ppo_omni_vla_20260330-105752/checkpoints/global_step_60
+  resume_dir: null
   ckpt_path: null
 
 algorithm:
@@ -65,6 +65,11 @@ algorithm:
   # Align current-train logprob semantics with rollout behavior policy without
   # forcing the entire vision path onto the heavier full-eval route.
   actor_train_model_mode: behavior_align
+  # add logs
+  debug_pipeline_trace: true
+  debug_pipeline_trace_rank0_only: true
+  debug_pipeline_trace_log_every: 10
+  debug_pipeline_trace_max_items: 3
   # Keep these off for stable baselines; re-enable only for further diagnosis.
   debug_train_rollout_semantics_gap: False
   debug_chain_trace: False

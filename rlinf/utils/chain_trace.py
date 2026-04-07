@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 import torch
 
 
@@ -27,8 +28,27 @@ def get_chain_trace_config(cfg) -> dict[str, Any]:
     }
 
 
+def get_pipeline_trace_config(cfg) -> dict[str, Any]:
+    algorithm_cfg = cfg.algorithm
+    return {
+        "enabled": bool(algorithm_cfg.get("debug_pipeline_trace", False)),
+        "rank0_only": bool(algorithm_cfg.get("debug_pipeline_trace_rank0_only", True)),
+        "log_every": max(int(algorithm_cfg.get("debug_pipeline_trace_log_every", 1)), 1),
+        "max_items": max(int(algorithm_cfg.get("debug_pipeline_trace_max_items", 3)), 1),
+    }
+
+
 def should_enable_chain_trace(cfg, rank: int) -> bool:
     trace_cfg = get_chain_trace_config(cfg)
+    if not trace_cfg["enabled"]:
+        return False
+    if trace_cfg["rank0_only"] and int(rank) != 0:
+        return False
+    return True
+
+
+def should_enable_pipeline_trace(cfg, rank: int) -> bool:
+    trace_cfg = get_pipeline_trace_config(cfg)
     if not trace_cfg["enabled"]:
         return False
     if trace_cfg["rank0_only"] and int(rank) != 0:
@@ -102,3 +122,26 @@ def format_block(title: str, lines: list[str]) -> str:
 def is_anomalous_value(value: float | None, threshold: float) -> bool:
     return value is not None and value >= float(threshold)
 
+
+def summarize_value(value: Any, *, max_items: int = 3) -> str:
+    if value is None:
+        return "None"
+    if torch.is_tensor(value):
+        return tensor_stats_str(value, max_values=max_items)
+    if isinstance(value, dict):
+        keys = list(value.keys())
+        parts = [f"keys={keys[:max_items]}"]
+        for key in keys[:max_items]:
+            parts.append(f"{key}={summarize_value(value[key], max_items=max_items)}")
+        return "; ".join(parts)
+    if isinstance(value, (list, tuple)):
+        preview = ", ".join(summarize_value(v, max_items=max_items) for v in list(value)[:max_items])
+        return f"len={len(value)}, head=[{preview}]"
+    if isinstance(value, np.ndarray):
+        return (
+            f"shape={value.shape}, mean={float(value.mean()):.6f}, "
+            f"std={float(value.std()):.6f}, min={float(value.min()):.6f}, max={float(value.max()):.6f}"
+        )
+    if isinstance(value, (int, float, bool, str)):
+        return str(value)
+    return type(value).__name__
