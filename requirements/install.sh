@@ -487,13 +487,29 @@ EOF
     uv pip uninstall pynvml || true
 }
 
+resolve_omni_vla_dir() {
+    local candidate
+    for candidate in "$SCRIPT_DIR/../omni_vla" "$SCRIPT_DIR/../Omni_VLA"; do
+        if [ -f "$candidate/pyproject.toml" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    echo "Omni_VLA source directory not found. Expected one of: $SCRIPT_DIR/../omni_vla or $SCRIPT_DIR/../Omni_VLA" >&2
+    exit 1
+}
+
 install_omni_vla_model() {
+    local omni_vla_dir
+    omni_vla_dir=$(resolve_omni_vla_dir)
+
     case "$ENV_NAME" in
         behavior)
             PYTHON_VERSION="3.10"
             create_and_sync_venv
             install_common_embodied_deps
-            uv pip install -e "$SCRIPT_DIR/../Omni_VLA"
+            uv pip install -e "$omni_vla_dir"
             install_behavior_env
             uv pip install protobuf==6.33.0
             ;;
@@ -501,42 +517,42 @@ install_omni_vla_model() {
             create_and_sync_venv
             install_common_embodied_deps
             install_maniskill_libero_env
-            uv pip install -e "$SCRIPT_DIR/../Omni_VLA"
+            uv pip install -e "$omni_vla_dir"
             install_flash_attn
             ;;
         metaworld)
             create_and_sync_venv
             install_common_embodied_deps
-            uv pip install -e "$SCRIPT_DIR/../Omni_VLA"
+            uv pip install -e "$omni_vla_dir"
             install_flash_attn
             install_metaworld_env
             ;;
         calvin)
             create_and_sync_venv
             install_common_embodied_deps
-            uv pip install -e "$SCRIPT_DIR/../Omni_VLA"
+            uv pip install -e "$omni_vla_dir"
             install_flash_attn
             install_calvin_env
             ;;
         robocasa)
             create_and_sync_venv
             install_common_embodied_deps
-            uv pip install -e "$SCRIPT_DIR/../Omni_VLA"
+            uv pip install -e "$omni_vla_dir"
             install_flash_attn
             install_robocasa_env
             ;;
         robotwin)
             create_and_sync_venv
             install_common_embodied_deps
-            uv pip install -e "$SCRIPT_DIR/../Omni_VLA"
+            uv pip install -e "$omni_vla_dir"
             install_flash_attn
             install_robotwin_env
             ;;
         minimal)
             create_and_sync_venv
             install_common_embodied_deps
-            uv pip install -e "$SCRIPT_DIR/../Omni_VLA/packages/openpi-client"
-            uv pip install -e "$SCRIPT_DIR/../Omni_VLA"
+            uv pip install -e "$omni_vla_dir/packages/openpi-client"
+            uv pip install -e "$omni_vla_dir"
             install_flash_attn
             ;;
         *)
@@ -552,8 +568,8 @@ import sys
 print(f"{sys.version_info.major}.{sys.version_info.minor}")
 EOF
 )
-    # Copy transformers replacement from Omni_VLA source
-    cp -r "$SCRIPT_DIR/../Omni_VLA/src/openpi/models_pytorch/transformers_replace/"* \
+    # Copy transformers replacement from the resolved Omni_VLA source tree.
+    cp -r "$omni_vla_dir/src/openpi/models_pytorch/transformers_replace/"* \
         "$VENV_DIR/lib/python${py_major_minor}/site-packages/transformers/"
     
     bash $SCRIPT_DIR/embodied/download_assets.sh --assets openpi
