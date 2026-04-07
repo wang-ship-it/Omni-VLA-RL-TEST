@@ -17,6 +17,7 @@ import logging
 import os
 
 from omegaconf import DictConfig
+from rlinf.utils.chain_trace import get_pipeline_trace_config
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,8 @@ def get_model(cfg: DictConfig, torch_dtype=None):
     )
 
     # config
+    pipeline_trace_cfg = get_pipeline_trace_config(cfg)
+    pipeline_trace_enabled = pipeline_trace_cfg["enabled"]
     config_name = getattr(cfg.omni_vla, "config_name", None)
     if config_name is None:
         raise ValueError(
@@ -125,6 +128,7 @@ def get_model(cfg: DictConfig, torch_dtype=None):
         actor_train_config.assets_dirs, actor_model_config
     )
     norm_stats = None
+    norm_stats_loaded = False
     if norm_stats is None:
         # We are loading the norm stats from the checkpoint instead of the config assets dir to make sure
         # that the policy is using the same normalization stats as the original training process.
@@ -133,6 +137,7 @@ def get_model(cfg: DictConfig, torch_dtype=None):
         try:
             norm_stats_dir = os.path.join(checkpoint_dir, data_config.asset_id)
             norm_stats = _normalize.load(norm_stats_dir)
+            norm_stats_loaded = norm_stats is not None
         except Exception as e:
             logger.warning(
                 f"Failed to load norm_stats from checkpoint_dir={checkpoint_dir}, "
@@ -176,5 +181,20 @@ def get_model(cfg: DictConfig, torch_dtype=None):
         transforms=transforms_list,
         output_transforms=output_transforms_list,
     )
+
+    if pipeline_trace_enabled:
+        logger.info(
+            "[PIPELINE TRACE] OmniVLA model init config_name=%s model_path=%s checkpoint_dir=%s asset_id=%s norm_stats_loaded=%s use_quantile_norm=%s input_transform_count=%s output_transform_count=%s action_horizon=%s action_dim=%s",
+            config_name,
+            cfg.model_path,
+            checkpoint_dir,
+            data_config.asset_id,
+            norm_stats_loaded,
+            data_config.use_quantile_norm,
+            len(transforms_list),
+            len(output_transforms_list),
+            getattr(actor_model_config, "action_horizon", None),
+            getattr(actor_model_config, "action_dim", None),
+        )
 
     return model

@@ -13,10 +13,14 @@
 # limitations under the License.
 # openpi model configs
 
+import logging
 import os
 
 import torch
 from omegaconf import DictConfig
+from rlinf.utils.chain_trace import get_pipeline_trace_config
+
+logger = logging.getLogger(__name__)
 
 
 def get_model(cfg: DictConfig, torch_dtype=None):
@@ -34,6 +38,8 @@ def get_model(cfg: DictConfig, torch_dtype=None):
     )
 
     # config
+    pipeline_trace_cfg = get_pipeline_trace_config(cfg)
+    pipeline_trace_enabled = pipeline_trace_cfg["enabled"]
     config_name = getattr(cfg.openpi, "config_name", None)
     data_kwargs = getattr(cfg, "openpi_data", None)
     actor_train_config = get_openpi_config(
@@ -122,5 +128,18 @@ def get_model(cfg: DictConfig, torch_dtype=None):
             *repack_transforms.outputs,
         ],
     )
+
+    if pipeline_trace_enabled:
+        logger.info(
+            "[PIPELINE TRACE] OpenPI model init config_name=%s model_path=%s checkpoint_dir=%s asset_id=%s norm_stats_loaded=%s use_quantile_norm=%s action_horizon=%s action_dim=%s",
+            config_name,
+            cfg.model_path,
+            checkpoint_dir,
+            data_config.asset_id,
+            norm_stats is not None,
+            data_config.use_quantile_norm,
+            getattr(actor_model_config, "action_horizon", None),
+            getattr(actor_model_config, "action_dim", None),
+        )
 
     return model

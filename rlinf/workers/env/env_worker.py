@@ -285,6 +285,8 @@ class EnvWorker(Worker):
             action_dim=self.cfg.actor.model.action_dim,
             policy=self.cfg.actor.model.get("policy_setup", None),
             wm_env_type=self.cfg.env.train.get("wm_env_type", None),
+            debug_trace=self._pipeline_trace_enabled,
+            debug_trace_prefix=f"EnvWorker rank={self._rank} stage_id={stage_id}",
         )
         env_info = {}
 
@@ -350,6 +352,8 @@ class EnvWorker(Worker):
             action_dim=self.cfg.actor.model.action_dim,
             policy=self.cfg.actor.model.get("policy_setup", None),
             wm_env_type=self.cfg.env.eval.get("wm_env_type", None),
+            debug_trace=self._pipeline_trace_enabled,
+            debug_trace_prefix=f"EnvWorkerEval rank={self._rank} stage_id={stage_id}",
         )
         env_info = {}
 

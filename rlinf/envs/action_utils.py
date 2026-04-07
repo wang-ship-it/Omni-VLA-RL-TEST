@@ -17,6 +17,7 @@ import torch
 
 from rlinf.config import SupportedModel
 from rlinf.envs import SupportedEnvType
+from rlinf.utils.chain_trace import summarize_value
 
 
 def prepare_actions_for_maniskill(
@@ -192,6 +193,8 @@ def prepare_actions(
     action_scale: float = 1.0,
     policy: str = "widowx_bridge",
     wm_env_type=None,
+    debug_trace: bool = False,
+    debug_trace_prefix: str = "",
 ) -> torch.Tensor | np.ndarray:
     raw_chunk_actions = (
         raw_chunk_actions.cpu().numpy()
@@ -256,5 +259,13 @@ def prepare_actions(
         )
     else:
         raise NotImplementedError
+
+    if debug_trace:
+        prefix = f"{debug_trace_prefix} " if debug_trace_prefix else ""
+        print(
+            f"[PIPELINE TRACE] {prefix}prepare_actions env_type={env_type.value} "
+            f"model_type={model_type} raw={summarize_value(raw_chunk_actions)} "
+            f"prepared={summarize_value(chunk_actions)}"
+        )
 
     return chunk_actions
